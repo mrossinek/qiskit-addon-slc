@@ -74,6 +74,7 @@ def _time_evolved_norm_backward(
         The unequal-time commutator bound :math:`\| \left[E, \rho\right] \|_1` for Pauli error
         :math:`E` and state :math:`\rho`, where the norm is the Schatten 1 norm (nuclear norm).
     """
+    metadata = {}
     start = time.time()
     # Convert the single Pauli to a SparsePauliOp which we can then evolve
     pauli = SparsePauliOp(pauli)
@@ -88,7 +89,8 @@ def _time_evolved_norm_backward(
 
     if trunc_bias >= 2.0:
         stop = time.time()
-        return CommutatorBounds(float("NaN"), trunc_bias, False, stop - start)
+        metadata["runtime"] = stop - start
+        return CommutatorBounds(float("NaN"), trunc_bias, False, metadata)
 
     acts_on_zero = np.any(pauli.paulis.x, axis=1)
     x = pauli.paulis.x[acts_on_zero]
@@ -102,7 +104,8 @@ def _time_evolved_norm_backward(
     comm_norm = 2 * sqrt_s
 
     stop = time.time()
-    return CommutatorBounds(float(comm_norm), trunc_bias, False, stop - start)
+    metadata["runtime"] = stop - start
+    return CommutatorBounds(float(comm_norm), trunc_bias, False, metadata)
 
 
 def compute_backward_bounds(

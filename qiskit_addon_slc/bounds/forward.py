@@ -89,6 +89,7 @@ def time_evolved_norm_forward(
     Returns:
         The unequal-time commutator bound.
     """
+    metadata = {}
     start = time.time()
     # Convert the single Pauli to a SparsePauliOp which we can then evolve
     orig = pauli
@@ -104,7 +105,8 @@ def time_evolved_norm_forward(
 
     if trunc_bias >= 2.0:
         stop = time.time()
-        return CommutatorBounds(float("NaN"), trunc_bias, False, stop - start)
+        metadata["runtime"] = stop - start
+        return CommutatorBounds(float("NaN"), trunc_bias, False, metadata)
 
     # Handle case of a single-Pauli:
     # Ignore limit on num qubits since don't need to go to computational basis.
@@ -112,7 +114,8 @@ def time_evolved_norm_forward(
     if len(pauli.paulis) == 1:
         comm_norm = 2 * np.abs(pauli.coeffs[0]) * (pauli.paulis[0].anticommutes(observable))
         stop = time.time()
-        return CommutatorBounds(comm_norm, trunc_bias, False, stop - start)
+        metadata["runtime"] = stop - start
+        return CommutatorBounds(comm_norm, trunc_bias, False, metadata)
 
     # NOTE: we must use .dot for the second operation because we need the implementation of
     # `SparsePauliOp.dot(Pauli)` since `Pauli.compose(SparsePauliOp)` is not implemented
@@ -140,14 +143,16 @@ def time_evolved_norm_forward(
 
     if trunc_bias >= 2.0:
         stop = time.time()
-        return CommutatorBounds(float("NaN"), trunc_bias, False, stop - start)
+        metadata["runtime"] = stop - start
+        return CommutatorBounds(float("NaN"), trunc_bias, False, metadata)
 
     # Handle case where commutator is 0:
     if np.logical_not(np.any((commutator.paulis.x, commutator.paulis.z))) and np.isclose(
         np.sum(commutator.coeffs), 0
     ):
         stop = time.time()
-        return CommutatorBounds(0.0, trunc_bias, False, stop - start)
+        metadata["runtime"] = stop - start
+        return CommutatorBounds(0.0, trunc_bias, False, metadata)
 
     # If any qubits have only identity Paulis, remove those qubits.
     # Not that important for operator evolution but possibly important for evaluating spectral norm:
@@ -166,12 +171,14 @@ def time_evolved_norm_forward(
     if comm_norm_order != 2:
         comm_norm = np.linalg.norm(commutator, ord=comm_norm_order)
         stop = time.time()
-        return CommutatorBounds(float(comm_norm), trunc_bias, False, stop - start)
+        metadata["runtime"] = stop - start
+        return CommutatorBounds(float(comm_norm), trunc_bias, False, metadata)
 
     def fallback_to_tri_ineq(coeffs, trunc_bias_) -> CommutatorBounds:
         comm_norm_ = 2 * np.abs(coeffs).sum()
         stop = time.time()
-        return CommutatorBounds(float(comm_norm_), trunc_bias_, True, stop - start)
+        metadata["runtime"] = stop - start
+        return CommutatorBounds(float(comm_norm_), trunc_bias_, True, metadata)
 
     # When the number of qubits is too large, fall back
     if commutator.num_qubits > eigval_max_qubits:
@@ -208,7 +215,8 @@ def time_evolved_norm_forward(
         return fallback_to_tri_ineq(commutator.coeffs, trunc_bias)
 
     stop = time.time()
-    return CommutatorBounds(comm_norm, trunc_bias, False, stop - start)
+    metadata["runtime"] = stop - start
+    return CommutatorBounds(comm_norm, trunc_bias, False, metadata)
 
 
 @deprecate_arg(

@@ -39,7 +39,6 @@ from qiskit.quantum_info import (
     QubitSparsePauliList,
     SparsePauliOp,
 )
-from scipy.stats import describe
 
 from .. import globals as slc_globals
 from ..utils import find_indices, iter_circuit
@@ -76,8 +75,8 @@ class CommutatorBounds(NamedTuple):
     """
     # TODO: document the triangle inequality that is being used here
 
-    runtime: float
-    """The duration of reaching this commutator bound."""
+    metadata: dict
+    """Arbitrary metadata from the task execution."""
 
     def min(self) -> float:
         """Returns the minimum bound encoded by this metadata.
@@ -101,6 +100,7 @@ def compute_bounds(
     max_num_boxes: int | None = None,
     num_processes: int = 1,
     timeout: float | None = None,
+    callback_inspect_metadata: Callable[[dict[str, list[dict]]], None] | None = None,
 ) -> Bounds:
     """Computes the unequal time commutator bounds.
 
@@ -171,14 +171,14 @@ def compute_bounds(
             )
 
     gathered_bounds: dict[str, tuple[np.ndarray, QubitSparsePauliList]] = {}
-    task_runtimes: dict[str, np.ndarray] = {}
+    task_metadata: dict[str, list[dict]] = {}
 
     def _insert_rate(bound: CommutatorBounds, box_id: str, rate_idx: int) -> None:
         nonlocal gathered_bounds
-        nonlocal task_runtimes
+        nonlocal task_metadata
 
         gathered_bounds[box_id][0][rate_idx] = bound.min()
-        task_runtimes[box_id][rate_idx] = bound.runtime
+        task_metadata[box_id][rate_idx].update(**bound.metadata)
 
     pool = mp.Pool(num_processes)
     tasks = set()
@@ -199,7 +199,7 @@ def compute_bounds(
         noise_terms: QubitSparsePauliList = noise_model_paulis[noise_id]
         # pre-populate computed bounds with trivial upper bound
         gathered_bounds[box_id] = (np.full(len(noise_terms), 2.0), noise_terms)
-        task_runtimes[box_id] = np.full(len(noise_terms), 0.0)
+        task_metadata[box_id] = [{} for _ in range(len(noise_terms))]
 
         encountered_num_boxes += 1
         if max_num_boxes is not None and encountered_num_boxes > max_num_boxes:
@@ -281,8 +281,8 @@ def compute_bounds(
 
     pool.join()
 
-    for box_id, runtimes in task_runtimes.items():
-        LOGGER.info(f"Bound computation runtimes for Box {box_id}:\n{describe(runtimes)}")
+    if callback_inspect_metadata is not None:
+        callback_inspect_metadata(task_metadata)
 
     comm_norms: Bounds = {
         box_id: PauliLindbladMap.from_components(bounds[0], bounds[1])
