@@ -39,6 +39,7 @@ from qiskit.quantum_info import (
     QubitSparsePauliList,
     SparsePauliOp,
 )
+from scipy.stats import describe
 
 from .. import globals as slc_globals
 from ..utils import find_indices, iter_circuit
@@ -74,6 +75,9 @@ class CommutatorBounds(NamedTuple):
     """Whether :attr:`commutator_bound` was computed "loosely" using a simple triangle inequality.
     """
     # TODO: document the triangle inequality that is being used here
+
+    runtime: float
+    """The duration of reaching this commutator bound."""
 
     def min(self) -> float:
         """Returns the minimum bound encoded by this metadata.
@@ -167,11 +171,14 @@ def compute_bounds(
             )
 
     gathered_bounds: dict[str, tuple[np.ndarray, QubitSparsePauliList]] = {}
+    task_runtimes: dict[str, np.ndarray] = {}
 
     def _insert_rate(bound: CommutatorBounds, box_id: str, rate_idx: int) -> None:
         nonlocal gathered_bounds
+        nonlocal task_runtimes
 
         gathered_bounds[box_id][0][rate_idx] = bound.min()
+        task_runtimes[box_id][rate_idx] = bound.runtime
 
     pool = mp.Pool(num_processes)
     tasks = set()
@@ -192,6 +199,7 @@ def compute_bounds(
         noise_terms: QubitSparsePauliList = noise_model_paulis[noise_id]
         # pre-populate computed bounds with trivial upper bound
         gathered_bounds[box_id] = (np.full(len(noise_terms), 2.0), noise_terms)
+        task_runtimes[box_id] = np.full(len(noise_terms), 0.0)
 
         encountered_num_boxes += 1
         if max_num_boxes is not None and encountered_num_boxes > max_num_boxes:
@@ -272,6 +280,9 @@ def compute_bounds(
     LOGGER.info(f"Successfully completed [{completed}/{total_num_tasks}] tasks!")
 
     pool.join()
+
+    for box_id, runtimes in task_runtimes.items():
+        LOGGER.info(f"Bound computation runtimes for Box {box_id}:\n{describe(runtimes)}")
 
     comm_norms: Bounds = {
         box_id: PauliLindbladMap.from_components(bounds[0], bounds[1])

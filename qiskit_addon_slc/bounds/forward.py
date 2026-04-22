@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from functools import partial
 
 import numpy as np
@@ -88,6 +89,7 @@ def time_evolved_norm_forward(
     Returns:
         The unequal-time commutator bound.
     """
+    start = time.time()
     # Convert the single Pauli to a SparsePauliOp which we can then evolve
     orig = pauli
     pauli = SparsePauliOp(pauli)
@@ -101,14 +103,16 @@ def time_evolved_norm_forward(
     trunc_bias = 2 * trunc_onenorm
 
     if trunc_bias >= 2.0:
-        return CommutatorBounds(float("NaN"), trunc_bias, False)
+        stop = time.time()
+        return CommutatorBounds(float("NaN"), trunc_bias, False, stop - start)
 
     # Handle case of a single-Pauli:
     # Ignore limit on num qubits since don't need to go to computational basis.
     # Efficiently handles Clifford case.
     if len(pauli.paulis) == 1:
         comm_norm = 2 * np.abs(pauli.coeffs[0]) * (pauli.paulis[0].anticommutes(observable))
-        return CommutatorBounds(comm_norm, trunc_bias, False)
+        stop = time.time()
+        return CommutatorBounds(comm_norm, trunc_bias, False, stop - start)
 
     # NOTE: we must use .dot for the second operation because we need the implementation of
     # `SparsePauliOp.dot(Pauli)` since `Pauli.compose(SparsePauliOp)` is not implemented
@@ -135,13 +139,15 @@ def time_evolved_norm_forward(
     trunc_bias += one_norm_loss
 
     if trunc_bias >= 2.0:
-        return CommutatorBounds(float("NaN"), trunc_bias, False)
+        stop = time.time()
+        return CommutatorBounds(float("NaN"), trunc_bias, False, stop - start)
 
     # Handle case where commutator is 0:
     if np.logical_not(np.any((commutator.paulis.x, commutator.paulis.z))) and np.isclose(
         np.sum(commutator.coeffs), 0
     ):
-        return CommutatorBounds(0.0, trunc_bias, False)
+        stop = time.time()
+        return CommutatorBounds(0.0, trunc_bias, False, stop - start)
 
     # If any qubits have only identity Paulis, remove those qubits.
     # Not that important for operator evolution but possibly important for evaluating spectral norm:
@@ -159,11 +165,13 @@ def time_evolved_norm_forward(
     # Handle case where a comm_norm_order other than 2 was requested:
     if comm_norm_order != 2:
         comm_norm = np.linalg.norm(commutator, ord=comm_norm_order)
-        return CommutatorBounds(float(comm_norm), trunc_bias, False)
+        stop = time.time()
+        return CommutatorBounds(float(comm_norm), trunc_bias, False, stop - start)
 
     def fallback_to_tri_ineq(coeffs, trunc_bias_) -> CommutatorBounds:
         comm_norm_ = 2 * np.abs(coeffs).sum()
-        return CommutatorBounds(float(comm_norm_), trunc_bias_, True)
+        stop = time.time()
+        return CommutatorBounds(float(comm_norm_), trunc_bias_, True, stop - start)
 
     # When the number of qubits is too large, fall back
     if commutator.num_qubits > eigval_max_qubits:
@@ -199,7 +207,8 @@ def time_evolved_norm_forward(
         LOGGER.debug("Eigensolver failed, reverting to triangle inequality...")
         return fallback_to_tri_ineq(commutator.coeffs, trunc_bias)
 
-    return CommutatorBounds(comm_norm, trunc_bias, False)
+    stop = time.time()
+    return CommutatorBounds(comm_norm, trunc_bias, False, stop - start)
 
 
 @deprecate_arg(
