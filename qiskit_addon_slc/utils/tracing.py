@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Generator
+from contextlib import contextmanager
 from typing import Any
 
 from ..optionals import HAS_OPENTELEMETRY
@@ -247,16 +249,11 @@ def get_tracer(name: str = "qiskit_addon_slc") -> Any:
     return trace.get_tracer(name)
 
 
-def inject_trace_context() -> dict[str, str] | None:
-    """Inject current trace context into a carrier dictionary.
+# Unified tracing utilities for cleaner code patterns
 
-    This function extracts the current trace context and serializes it into a
-    dictionary that can be passed across process boundaries.
 
-    Returns:
-        A dictionary containing the serialized trace context, or None if tracing
-        is disabled, OpenTelemetry is not available, or no active context exists.
-    """
+def _inject_trace_context() -> dict[str, str] | None:
+    """Internal: Inject current trace context into a carrier dictionary."""
     if not HAS_OPENTELEMETRY or not is_tracing_enabled():
         return None
 
@@ -271,19 +268,8 @@ def inject_trace_context() -> dict[str, str] | None:
         return None
 
 
-def extract_trace_context(carrier: dict[str, str] | None) -> Any:
-    """Extract trace context from carrier dictionary.
-
-    This function deserializes trace context from a carrier dictionary that was
-    created by inject_trace_context() in another process.
-
-    Args:
-        carrier: A dictionary containing serialized trace context, or None.
-
-    Returns:
-        The extracted context, or None if carrier is None, OpenTelemetry is not
-        available, or extraction fails.
-    """
+def _extract_trace_context(carrier: dict[str, str] | None) -> Any:
+    """Internal: Extract trace context from carrier dictionary."""
     if carrier is None or not HAS_OPENTELEMETRY or not is_tracing_enabled():
         return None
 
@@ -296,16 +282,8 @@ def extract_trace_context(carrier: dict[str, str] | None) -> Any:
         return None
 
 
-def attach_context(ctx: Any) -> Any:
-    """Attach a trace context to the current execution context.
-
-    Args:
-        ctx: The context to attach, typically obtained from extract_trace_context().
-
-    Returns:
-        A token that can be used to detach the context later, or None if ctx is None
-        or OpenTelemetry is not available.
-    """
+def _attach_context(ctx: Any) -> Any:
+    """Internal: Attach a trace context to the current execution context."""
     if ctx is None or not HAS_OPENTELEMETRY:
         return None
 
@@ -318,12 +296,8 @@ def attach_context(ctx: Any) -> Any:
         return None
 
 
-def detach_context(token: Any) -> None:
-    """Detach a previously attached trace context.
-
-    Args:
-        token: The token returned by attach_context().
-    """
+def _detach_context(token: Any) -> None:
+    """Internal: Detach a previously attached trace context."""
     if token is None or not HAS_OPENTELEMETRY:
         return
 
@@ -333,3 +307,102 @@ def detach_context(token: Any) -> None:
         context.detach(token)
     except Exception as e:
         LOGGER.debug(f"Failed to detach context: {e}")
+
+
+@contextmanager
+def traced_span(
+    name: str,
+    *,
+    tracer_name: str | None = None,
+    trace_context: dict[str, str] | None = None,
+    parent_span: Any | None = None,
+    attributes: dict[str, Any] | None = None,
+) -> Generator[Any, None, None]:
+    """Context manager for creating traced spans with automatic context management.
+
+    This context manager handles all the complexity of:
+    - Extracting and attaching trace context from cross-process boundaries
+    - Creating child spans from parent spans
+    - Automatic cleanup and detachment
+    - Graceful degradation when tracing is disabled
+
+    Args:
+        name: Name of the span.
+        tracer_name: Optional tracer name (defaults to calling module).
+        trace_context: Optional serialized trace context from another process.
+        parent_span: Optional parent span to create a child span under.
+        attributes: Optional span attributes.
+
+    Yields:
+        The created span (or NoOpSpan if tracing is disabled).
+
+    Example:
+        Simple usage::
+
+            with traced_span("my_operation") as span:
+                span.add_event("started")
+                do_work()
+
+        With parent span::
+
+            with traced_span("child_op", parent_span=parent) as span:
+                do_work()
+
+        With cross-process context::
+
+            with traced_span("worker_task", trace_context=ctx_dict) as span:
+                do_work()
+    """
+    if not is_tracing_enabled():
+        yield NoOpSpan()
+        return
+
+    tracer = get_tracer(tracer_name or "qiskit_addon_slc")
+
+    # Handle trace context from cross-process boundary
+    ctx = None
+    token = None
+    if trace_context is not None:
+        ctx = _extract_trace_context(trace_context)
+        token = _attach_context(ctx)
+
+    # Handle parent span
+    elif parent_span is not None and HAS_OPENTELEMETRY:
+        try:
+            from opentelemetry.trace import set_span_in_context
+
+            ctx = set_span_in_context(parent_span)
+        except Exception as e:
+            LOGGER.debug(f"Failed to set span in context: {e}")
+            ctx = None
+
+    try:
+        with tracer.start_as_current_span(name, context=ctx, attributes=attributes or {}) as span:
+            yield span
+    finally:
+        if token is not None:
+            _detach_context(token)
+
+
+def prepare_worker_context() -> dict[str, str] | None:
+    """Prepare trace context for worker processes.
+
+    This should be called in the main process before spawning workers.
+    The returned dict can be passed to worker processes.
+
+    Returns:
+        Serialized trace context or None if tracing disabled.
+
+    Example:
+        In main process::
+
+            ctx = prepare_worker_context()
+
+            # Pass to worker
+            pool.apply_async(
+                worker_func,
+                args=(...),
+                kwds={"trace_context": ctx}
+            )
+    """
+    return _inject_trace_context() if is_tracing_enabled() else None

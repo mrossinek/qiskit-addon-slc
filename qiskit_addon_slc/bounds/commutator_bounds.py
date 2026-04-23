@@ -42,11 +42,7 @@ from qiskit.quantum_info import (
 
 from .. import globals as slc_globals
 from ..utils import find_indices, iter_circuit
-from ..utils.tracing import (
-    get_tracer,
-    inject_trace_context,
-    is_tracing_enabled,
-)
+from ..utils.tracing import prepare_worker_context, traced_span
 from .light_cone import LightCone
 
 Bounds = dict[str, PauliLindbladMap]
@@ -137,29 +133,17 @@ def compute_bounds(
     """
     LOGGER.debug(f"Using {num_processes} processes")
 
-    tracer = get_tracer(__name__)
-
-    # Create child span if parent_span is provided, otherwise create root span
-    span_attributes = {
-        "circuit.num_qubits": circuit.num_qubits,
-        "num_processes": num_processes,
-        "backwards": backwards,
-        "max_num_boxes": max_num_boxes if max_num_boxes is not None else -1,
-    }
-
-    # Set context based on whether parent_span is provided
-    # Note: We still need this conditional because set_span_in_context is an OpenTelemetry API
-    # that requires a real span object (NoOpSpan won't work here)
-    if is_tracing_enabled() and parent_span is not None:
-        from opentelemetry.trace import set_span_in_context
-
-        ctx = set_span_in_context(parent_span)
-    else:
-        ctx = None
-
-    with tracer.start_as_current_span(
-        "compute_bounds", context=ctx, attributes=span_attributes
-    ) as child_span:
+    with traced_span(
+        "compute_bounds",
+        tracer_name=__name__,
+        parent_span=parent_span,
+        attributes={
+            "circuit.num_qubits": circuit.num_qubits,
+            "num_processes": num_processes,
+            "backwards": backwards,
+            "max_num_boxes": max_num_boxes if max_num_boxes is not None else -1,
+        },
+    ) as span:
         return _compute_bounds_impl(
             circuit,
             noise_model_paulis,
@@ -169,7 +153,7 @@ def compute_bounds(
             max_num_boxes=max_num_boxes,
             num_processes=num_processes,
             timeout=timeout,
-            parent_span=child_span,
+            parent_span=span,
         )
 
 
@@ -245,8 +229,8 @@ def _compute_bounds_impl(
         parent_span.add_event("task_spawning_started")
     LOGGER.debug("Starting to spawn bound computation tasks")
 
-    # Inject trace context for propagation to worker processes
-    trace_context = inject_trace_context() if is_tracing_enabled() else None
+    # Prepare trace context for propagation to worker processes
+    trace_context = prepare_worker_context()
 
     encountered_num_boxes = 0
 

@@ -36,12 +36,7 @@ from qiskit.quantum_info import (
 
 from .. import globals as slc_globals
 from ..utils import remove_measure
-from ..utils.tracing import (
-    attach_context,
-    detach_context,
-    extract_trace_context,
-    get_tracer,
-)
+from ..utils.tracing import traced_span
 from .commutator_bounds import Bounds, CommutatorBounds, compute_bounds
 from .light_cone import LightCone
 
@@ -85,24 +80,17 @@ def time_evolved_norm_backward(
     # Convert the single Pauli to a SparsePauliOp which we can then evolve
     pauli = SparsePauliOp(pauli)
 
-    tracer = get_tracer(__name__)
-
-    # Extract and attach trace context if provided
-    ctx = extract_trace_context(trace_context)
-    token = attach_context(ctx)
-
-    try:
-        with tracer.start_as_current_span(
-            "backward_norm_computation",
-            attributes={
-                "pauli": str(pauli),
-                "pauli.num_qubits": pauli.num_qubits,
-                "gates.count": len(gates.gates),
-            },
-        ) as span:
-            return _compute_backward_norm(pauli, gates, evolution_max_terms, span)
-    finally:
-        detach_context(token)
+    with traced_span(
+        "backward_norm_computation",
+        tracer_name=__name__,
+        trace_context=trace_context,
+        attributes={
+            "pauli": str(pauli),
+            "pauli.num_qubits": pauli.num_qubits,
+            "gates.count": len(gates.gates),
+        },
+    ) as span:
+        return _compute_backward_norm(pauli, gates, evolution_max_terms, span)
 
 
 def _compute_backward_norm(
@@ -193,19 +181,18 @@ def compute_backward_bounds(
     LOGGER.info("Evolving Pauli error terms backwards through the circuit.")
     LOGGER.info("Modelling errors as though they happen *after* each noise layer.")
 
-    tracer = get_tracer(__name__)
-
-    with tracer.start_as_current_span(
+    with traced_span(
         "compute_backward_bounds",
+        tracer_name=__name__,
         attributes={
             "circuit.num_qubits": circuit.num_qubits,
         },
-    ) as parent_span:
+    ) as span:
         return _compute_backward_bounds_impl(
             circuit,
             noise_model_paulis,
             evolution_max_terms,
-            parent_span=parent_span,
+            parent_span=span,
             **kwargs,
         )
 
