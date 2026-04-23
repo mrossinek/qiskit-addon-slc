@@ -41,7 +41,6 @@ from qiskit.quantum_info import (
 )
 
 from .. import globals as slc_globals
-from ..optionals import HAS_OPENTELEMETRY
 from ..utils import find_indices, initialize_worker, iter_circuit
 from ..utils.tracing import prepare_worker_context, traced_span
 from .light_cone import LightCone
@@ -212,9 +211,6 @@ def compute_bounds(
             span.add_event("task_spawning_started")
         LOGGER.debug("Starting to spawn bound computation tasks")
 
-        # Prepare trace context for propagation to worker processes
-        trace_context = prepare_worker_context()
-
         encountered_num_boxes = 0
 
         for circ_inst, qargs, box_id, noise_id in iter_circuit(circuit, reverse=True):
@@ -267,7 +263,6 @@ def compute_bounds(
                 task = pool.apply_async(
                     norm_fn,
                     [pauli],
-                    {"trace_context": trace_context},
                     callback=partial(_insert_rate, box_id=box_id, rate_idx=pauli_idx),
                 )
                 tasks.add(task)
@@ -311,7 +306,9 @@ def compute_bounds(
                     # Close pool to prevent new tasks, allowing workers to finish current tasks
                     # and properly clean up their spans via atexit handlers
                     pool.close()
-                    LOGGER.warning("Waiting for workers to finish current tasks and clean up spans...")
+                    LOGGER.warning(
+                        "Waiting for workers to finish current tasks and clean up spans..."
+                    )
                     # Give workers time to finish current tasks and flush spans (max 10 seconds)
                     cleanup_start = time.time()
                     cleanup_timeout = 10

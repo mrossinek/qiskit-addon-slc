@@ -47,7 +47,6 @@ def time_evolved_norm_backward(
     gates: RotationGates,
     *,
     evolution_max_terms: int = np.iinfo(np.uint).max,
-    trace_context: dict[str, str] | None = None,
 ) -> CommutatorBounds:
     r"""Bound the effect of an error Pauli term on the quantum state by evolving the error backward.
 
@@ -70,7 +69,6 @@ def time_evolved_norm_backward(
             :func:`~pauli_prop.propagation.propagate_through_rotation_gates`).
         evolution_max_terms: the maximum number of operator terms to keep track of during the
             evolution.
-        trace_context: optional trace context for distributed tracing across process boundaries.
 
     Returns:
         The unequal-time commutator bound :math:`\| \left[E, \rho\right] \|_1` for Pauli error
@@ -89,7 +87,7 @@ def time_evolved_norm_backward(
         "pauli.num_qubits": pauli.num_qubits,
         "gates.count": len(gates.gates),
     }
-    
+
     # Add worker metadata if available
     if worker_info["worker_index"] >= 0:
         span_attributes["worker.index"] = worker_info["worker_index"]

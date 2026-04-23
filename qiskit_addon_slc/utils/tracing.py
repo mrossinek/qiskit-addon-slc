@@ -514,6 +514,7 @@ def initialize_worker(trace_context: dict[str, str] | None = None) -> None:
             if worker_ctx_token is not None and HAS_OPENTELEMETRY:
                 try:
                     from opentelemetry import context as otel_context
+
                     otel_context.detach(worker_ctx_token)
                 except Exception as e:
                     LOGGER.debug(f"Failed to detach worker context: {e}")
@@ -521,9 +522,7 @@ def initialize_worker(trace_context: dict[str, str] | None = None) -> None:
             # End worker span
             worker_span = getattr(_worker_span_storage, "span", None)
             if worker_span is not None:
-                LOGGER.debug(
-                    f"Ending worker span for worker {worker_index} (PID: {pid})"
-                )
+                LOGGER.debug(f"Ending worker span for worker {worker_index} (PID: {pid})")
                 worker_span.end()
 
                 # Force flush to ensure span is exported before process terminates
@@ -543,7 +542,7 @@ def initialize_worker(trace_context: dict[str, str] | None = None) -> None:
         atexit.register(cleanup_worker_span)
 
         # Register signal handler for SIGTERM to ensure spans are closed even on pool.terminate()
-        def sigterm_handler(signum: int, frame: Any) -> None:
+        def sigterm_handler(_signum: int, _frame: Any) -> None:
             """Handle SIGTERM by cleaning up spans before process terminates."""
             LOGGER.debug(f"Worker {worker_index} (PID: {pid}) received SIGTERM, cleaning up spans")
             cleanup_worker_span()
