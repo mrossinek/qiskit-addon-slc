@@ -170,7 +170,7 @@ def _compute_forward_norm(
         atol=slc_globals.ZERO_ATOL,
         frame="s",
     )
-    trunc_bias = 2 * trunc_onenorm
+    trunc_bias = float(2 * trunc_onenorm)
     if span is not None:
         span.add_event("pauli_propagation_completed")
         span.set_attribute("truncation.one_norm", float(trunc_onenorm))
@@ -189,7 +189,7 @@ def _compute_forward_norm(
         if span is not None:
             span.add_event("single_pauli_optimization")
         comm_norm = 2 * np.abs(pauli.coeffs[0]) * (pauli.paulis[0].anticommutes(observable))
-        result = CommutatorBounds(comm_norm, trunc_bias, False)
+        result = CommutatorBounds(float(comm_norm), trunc_bias, False)
         if span is not None:
             span.set_attribute("result", result)
         return result
@@ -218,7 +218,7 @@ def _compute_forward_norm(
     # compute loss in 1-norm due to simplifying to atol
     one_norm_loss = one_norm_before - one_norm_after
     one_norm_loss = max(one_norm_loss, np.float64(0.0))
-    trunc_bias += one_norm_loss
+    trunc_bias += float(one_norm_loss)
     if span is not None:
         span.add_event("commutator_computation_completed")
 
@@ -320,7 +320,7 @@ def _compute_forward_norm(
         LOGGER.debug("Eigensolver failed, reverting to triangle inequality...")
         return fallback_to_tri_ineq(commutator.coeffs, trunc_bias)
 
-    result = CommutatorBounds(comm_norm, trunc_bias, False)
+    result = CommutatorBounds(float(comm_norm), trunc_bias, False)
     if span is not None:
         span.set_attribute("result", result)
 

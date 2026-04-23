@@ -127,7 +127,7 @@ def _compute_backward_norm(
         atol=slc_globals.ZERO_ATOL,
         frame="s",
     )
-    trunc_bias = 2 * trunc_onenorm
+    trunc_bias = float(2 * trunc_onenorm)
     if span is not None:
         span.add_event("pauli_propagation_completed")
         span.set_attribute("truncation.one_norm", float(trunc_onenorm))
@@ -148,9 +148,9 @@ def _compute_backward_norm(
     s = np.zeros(len(uniques), dtype=complex)
     np.add.at(s, which_unique_x, c * ((1j) ** np.sum(z * x, axis=1)))
     sqrt_s = np.linalg.norm(s)
-    comm_norm = 2 * sqrt_s
+    comm_norm = float(2 * sqrt_s)
 
-    result = CommutatorBounds(float(comm_norm), trunc_bias, False)
+    result = CommutatorBounds(comm_norm, trunc_bias, False)
     if span is not None:
         span.set_attribute("result", result)
 
