@@ -43,6 +43,7 @@ from qiskit.quantum_info import (
 from .. import globals as slc_globals
 from ..utils import find_indices, iter_circuit
 from ..utils.tracing import (
+    get_tracer,
     inject_trace_context,
     is_tracing_enabled,
 )
@@ -151,9 +152,7 @@ def compute_bounds(
         )
 
     # Tracing is enabled, wrap in span
-    from opentelemetry import trace
-
-    tracer = trace.get_tracer(__name__)
+    tracer = get_tracer(__name__)
 
     # Create child span if parent_span is provided, otherwise create root span
     span_attributes = {
@@ -164,7 +163,9 @@ def compute_bounds(
     }
 
     # Set context based on whether parent_span is provided
-    ctx = trace.set_span_in_context(parent_span) if parent_span is not None else None
+    from opentelemetry.trace import set_span_in_context
+
+    ctx = set_span_in_context(parent_span) if parent_span is not None else None
 
     with tracer.start_as_current_span(
         "compute_bounds", context=ctx, attributes=span_attributes

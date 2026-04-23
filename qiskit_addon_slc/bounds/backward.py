@@ -40,6 +40,7 @@ from ..utils.tracing import (
     attach_context,
     detach_context,
     extract_trace_context,
+    get_tracer,
     is_tracing_enabled,
 )
 from .commutator_bounds import Bounds, CommutatorBounds, compute_bounds
@@ -90,9 +91,7 @@ def time_evolved_norm_backward(
         return _compute_backward_norm(pauli, gates, evolution_max_terms, span=None)
 
     # Tracing is enabled, wrap in span
-    from opentelemetry import trace
-
-    tracer = trace.get_tracer(__name__)
+    tracer = get_tracer(__name__)
 
     # Extract and attach trace context if provided
     ctx = extract_trace_context(trace_context)
@@ -211,9 +210,7 @@ def compute_backward_bounds(
         )
 
     # Tracing is enabled, wrap in span
-    from opentelemetry import trace
-
-    tracer = trace.get_tracer(__name__)
+    tracer = get_tracer(__name__)
 
     with tracer.start_as_current_span(
         "compute_backward_bounds",
