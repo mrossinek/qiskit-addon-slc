@@ -245,3 +245,91 @@ def get_tracer(name: str = "qiskit_addon_slc") -> Any:
     from opentelemetry import trace
 
     return trace.get_tracer(name)
+
+
+def inject_trace_context() -> dict[str, str] | None:
+    """Inject current trace context into a carrier dictionary.
+
+    This function extracts the current trace context and serializes it into a
+    dictionary that can be passed across process boundaries.
+
+    Returns:
+        A dictionary containing the serialized trace context, or None if tracing
+        is disabled, OpenTelemetry is not available, or no active context exists.
+    """
+    if not HAS_OPENTELEMETRY or not is_tracing_enabled():
+        return None
+
+    try:
+        from opentelemetry.propagate import inject
+
+        carrier: dict[str, str] = {}
+        inject(carrier)
+        return carrier if carrier else None
+    except Exception as e:
+        LOGGER.debug(f"Failed to inject trace context: {e}")
+        return None
+
+
+def extract_trace_context(carrier: dict[str, str] | None) -> Any:
+    """Extract trace context from carrier dictionary.
+
+    This function deserializes trace context from a carrier dictionary that was
+    created by inject_trace_context() in another process.
+
+    Args:
+        carrier: A dictionary containing serialized trace context, or None.
+
+    Returns:
+        The extracted context, or None if carrier is None, OpenTelemetry is not
+        available, or extraction fails.
+    """
+    if carrier is None or not HAS_OPENTELEMETRY or not is_tracing_enabled():
+        return None
+
+    try:
+        from opentelemetry.propagate import extract
+
+        return extract(carrier)
+    except Exception as e:
+        LOGGER.debug(f"Failed to extract trace context: {e}")
+        return None
+
+
+def attach_context(ctx: Any) -> Any:
+    """Attach a trace context to the current execution context.
+
+    Args:
+        ctx: The context to attach, typically obtained from extract_trace_context().
+
+    Returns:
+        A token that can be used to detach the context later, or None if ctx is None
+        or OpenTelemetry is not available.
+    """
+    if ctx is None or not HAS_OPENTELEMETRY:
+        return None
+
+    try:
+        from opentelemetry import context
+
+        return context.attach(ctx)
+    except Exception as e:
+        LOGGER.debug(f"Failed to attach context: {e}")
+        return None
+
+
+def detach_context(token: Any) -> None:
+    """Detach a previously attached trace context.
+
+    Args:
+        token: The token returned by attach_context().
+    """
+    if token is None or not HAS_OPENTELEMETRY:
+        return
+
+    try:
+        from opentelemetry import context
+
+        context.detach(token)
+    except Exception as e:
+        LOGGER.debug(f"Failed to detach context: {e}")
