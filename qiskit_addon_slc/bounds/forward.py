@@ -179,7 +179,9 @@ def _compute_forward_norm(
         result = CommutatorBounds(float("NaN"), trunc_bias, False)
         if span is not None:
             span.add_event("computation_aborted", {"reason": "truncation_bias_exceeds_bound"})
-            span.set_attribute("result", result)
+            span.set_attribute("result.commutator_bound", result.commutator_bound)
+            span.set_attribute("result.truncation_bias", result.truncation_bias)
+            span.set_attribute("result.fallback_to_tri_ineq", result.fallback_to_tri_ineq)
         return result
 
     # Handle case of a single-Pauli:
@@ -191,7 +193,9 @@ def _compute_forward_norm(
         comm_norm = 2 * np.abs(pauli.coeffs[0]) * (pauli.paulis[0].anticommutes(observable))
         result = CommutatorBounds(float(comm_norm), trunc_bias, False)
         if span is not None:
-            span.set_attribute("result", result)
+            span.set_attribute("result.commutator_bound", result.commutator_bound)
+            span.set_attribute("result.truncation_bias", result.truncation_bias)
+            span.set_attribute("result.fallback_to_tri_ineq", result.fallback_to_tri_ineq)
         return result
 
     if span is not None:
@@ -225,7 +229,9 @@ def _compute_forward_norm(
     if trunc_bias >= 2.0:
         if span is not None:
             span.add_event("computation_aborted", {"reason": "truncation_bias_exceeds_bound"})
-            span.set_attribute("result", result)
+            span.set_attribute("result.commutator_bound", result.commutator_bound)
+            span.set_attribute("result.truncation_bias", result.truncation_bias)
+            span.set_attribute("result.fallback_to_tri_ineq", result.fallback_to_tri_ineq)
         return CommutatorBounds(float("NaN"), trunc_bias, False)
 
     # Handle case where commutator is 0:
@@ -235,7 +241,9 @@ def _compute_forward_norm(
         result = CommutatorBounds(0.0, trunc_bias, False)
         if span is not None:
             span.add_event("zero_commutator")
-            span.set_attribute("result", result)
+            span.set_attribute("result.commutator_bound", result.commutator_bound)
+            span.set_attribute("result.truncation_bias", result.truncation_bias)
+            span.set_attribute("result.fallback_to_tri_ineq", result.fallback_to_tri_ineq)
         return result
 
     # If any qubits have only identity Paulis, remove those qubits.
@@ -258,7 +266,9 @@ def _compute_forward_norm(
         comm_norm = np.linalg.norm(commutator, ord=comm_norm_order)
         result = CommutatorBounds(float(comm_norm), trunc_bias, False)
         if span is not None:
-            span.set_attribute("result", result)
+            span.set_attribute("result.commutator_bound", result.commutator_bound)
+            span.set_attribute("result.truncation_bias", result.truncation_bias)
+            span.set_attribute("result.fallback_to_tri_ineq", result.fallback_to_tri_ineq)
         return result
 
     def fallback_to_tri_ineq(coeffs, trunc_bias_) -> CommutatorBounds:
@@ -266,7 +276,9 @@ def _compute_forward_norm(
         result = CommutatorBounds(float(comm_norm_), trunc_bias_, True)
         if span is not None:
             span.add_event("fallback_to_triangle_inequality")
-            span.set_attribute("result", result)
+            span.set_attribute("result.commutator_bound", result.commutator_bound)
+            span.set_attribute("result.truncation_bias", result.truncation_bias)
+            span.set_attribute("result.fallback_to_tri_ineq", result.fallback_to_tri_ineq)
         return result
 
     # When the number of qubits is too large, fall back
@@ -322,7 +334,9 @@ def _compute_forward_norm(
 
     result = CommutatorBounds(float(comm_norm), trunc_bias, False)
     if span is not None:
-        span.set_attribute("result", result)
+        span.set_attribute("result.commutator_bound", result.commutator_bound)
+        span.set_attribute("result.truncation_bias", result.truncation_bias)
+        span.set_attribute("result.fallback_to_tri_ineq", result.fallback_to_tri_ineq)
 
     return result
 

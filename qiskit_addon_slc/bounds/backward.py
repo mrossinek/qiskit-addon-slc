@@ -136,7 +136,9 @@ def _compute_backward_norm(
         result = CommutatorBounds(float("NaN"), trunc_bias, False)
         if span is not None:
             span.add_event("computation_aborted", {"reason": "truncation_bias_exceeds_bound"})
-            span.set_attribute("result", result)
+            span.set_attribute("result.commutator_bound", result.commutator_bound)
+            span.set_attribute("result.truncation_bias", result.truncation_bias)
+            span.set_attribute("result.fallback_to_tri_ineq", result.fallback_to_tri_ineq)
         return result
 
     acts_on_zero = np.any(pauli.paulis.x, axis=1)
@@ -152,7 +154,9 @@ def _compute_backward_norm(
 
     result = CommutatorBounds(comm_norm, trunc_bias, False)
     if span is not None:
-        span.set_attribute("result", result)
+        span.set_attribute("result.commutator_bound", result.commutator_bound)
+        span.set_attribute("result.truncation_bias", result.truncation_bias)
+        span.set_attribute("result.fallback_to_tri_ineq", result.fallback_to_tri_ineq)
 
     return result
 
