@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 from functools import partial
+from typing import Any
 
 import numpy as np
 from pauli_prop.propagation import (
@@ -35,6 +36,7 @@ from qiskit.quantum_info import (
 
 from .. import globals as slc_globals
 from ..utils import remove_measure
+from ..utils.tracing import attach_context, detach_context, extract_trace_context, get_tracer
 from .commutator_bounds import Bounds, CommutatorBounds, compute_bounds
 from .light_cone import LightCone
 
@@ -46,6 +48,7 @@ def _time_evolved_norm_backward(
     gates: RotationGates,
     *,
     evolution_max_terms: int = np.iinfo(np.uint).max,
+    trace_context: dict[str, str] | None = None,
 ) -> CommutatorBounds:
     r"""Bound the effect of an error Pauli term on the quantum state by evolving the error backward.
 
@@ -68,13 +71,41 @@ def _time_evolved_norm_backward(
             :func:`~pauli_prop.propagation.propagate_through_rotation_gates`).
         evolution_max_terms: the maximum number of operator terms to keep track of during the
             evolution.
+        trace_context: optional trace context for distributed tracing across process boundaries.
 
     Returns:
         The unequal-time commutator bound :math:`\| \left[E, \rho\right] \|_1` for Pauli error
         :math:`E` and state :math:`\rho`, where the norm is the Schatten 1 norm (nuclear norm).
     """
-    # Convert the single Pauli to a SparsePauliOp which we can then evolve
-    pauli = SparsePauliOp(pauli)
+    tracer = get_tracer(__name__)
+
+    # Extract and attach trace context if provided
+    ctx = extract_trace_context(trace_context)
+    token = attach_context(ctx)
+
+    try:
+        with tracer.start_as_current_span(
+            "backward_norm_computation",
+            attributes={
+                "pauli.num_qubits": len(pauli),
+                "gates.count": len(gates.gates),
+                "evolution_max_terms": evolution_max_terms,
+            },
+        ) as span:
+            # Convert the single Pauli to a SparsePauliOp which we can then evolve
+            pauli_op = SparsePauliOp(pauli)
+            return _compute_backward_norm(pauli_op, gates, evolution_max_terms, span)
+    finally:
+        detach_context(token)
+
+
+def _compute_backward_norm(
+    pauli: SparsePauliOp,
+    gates: RotationGates,
+    evolution_max_terms: int,
+    span: Any,
+) -> CommutatorBounds:
+    """Internal implementation of backward norm computation with span tracking."""
     pauli, trunc_onenorm = propagate_through_rotation_gates(
         operator=pauli,
         rot_gates=gates,
@@ -84,8 +115,16 @@ def _time_evolved_norm_backward(
     )
     trunc_bias = 2 * trunc_onenorm
 
+    span.set_attribute("truncation.one_norm", float(trunc_onenorm))
+    span.set_attribute("truncation.bias", float(trunc_bias))
+
     if trunc_bias >= 2.0:
-        return CommutatorBounds(float("NaN"), trunc_bias, False)
+        span.add_event("computation_aborted", {"reason": "truncation_bias_exceeds_bound"})
+        result = CommutatorBounds(float("NaN"), trunc_bias, False)
+        span.set_attribute("result.commutator_bound", "NaN")
+        span.set_attribute("result.truncation_bias", result.truncation_bias)
+        span.set_attribute("result.fallback_to_tri_ineq", result.fallback_to_tri_ineq)
+        return result
 
     acts_on_zero = np.any(pauli.paulis.x, axis=1)
     x = pauli.paulis.x[acts_on_zero]
@@ -98,7 +137,15 @@ def _time_evolved_norm_backward(
     sqrt_s = np.linalg.norm(s)
     comm_norm = 2 * sqrt_s
 
-    return CommutatorBounds(float(comm_norm), trunc_bias, False)
+    result = CommutatorBounds(float(comm_norm), trunc_bias, False)
+
+    # Add result attributes to span
+    span.set_attribute("result.commutator_bound", result.commutator_bound)
+    span.set_attribute("result.truncation_bias", result.truncation_bias)
+    span.set_attribute("result.fallback_to_tri_ineq", result.fallback_to_tri_ineq)
+    span.set_attribute("result.min_bound", result.min())
+
+    return result
 
 
 def compute_backward_bounds(

@@ -23,8 +23,13 @@ This module provides a number of globally configurable settings.
 .. autoclass:: PROGRESS_POLLING_PERIOD
 
 .. autoclass:: ZERO_ATOL
+
+.. autoclass:: TRACING_ENABLED
+
+.. autoclass:: OTEL_SERVICE_NAME
 """
 
+import os
 import sys
 
 PROGRESS_POLLING_PERIOD = 5
@@ -38,4 +43,18 @@ ZERO_ATOL = 10 * sys.float_info.epsilon
 """The absolute tolerance value below which terms are considered truly zero and are truncated.
 
 This defaults to the value of ``10 * sys.float_info.epsilon``.
+"""
+
+TRACING_ENABLED = os.getenv("QISKIT_SLC_TRACING_ENABLED", "false").lower() == "true"
+"""Whether OpenTelemetry tracing is enabled for profiling parallel computations.
+
+This can be controlled via the ``QISKIT_SLC_TRACING_ENABLED`` environment variable.
+Set to ``"true"`` to enable tracing. Defaults to ``False``.
+"""
+
+OTEL_SERVICE_NAME = os.getenv("OTEL_SERVICE_NAME", "qiskit-addon-slc")
+"""The service name to use for OpenTelemetry traces.
+
+This can be controlled via the ``OTEL_SERVICE_NAME`` environment variable.
+Defaults to ``"qiskit-addon-slc"``.
 """

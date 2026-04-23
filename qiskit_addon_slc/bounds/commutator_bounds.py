@@ -23,7 +23,7 @@ import multiprocessing as mp
 import time
 from collections.abc import Callable
 from functools import partial
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 import numpy as np
 from pauli_prop.propagation import (
@@ -42,6 +42,11 @@ from qiskit.quantum_info import (
 
 from .. import globals as slc_globals
 from ..utils import find_indices, iter_circuit
+from ..utils.tracing import (
+    get_tracer,
+    inject_trace_context,
+    is_tracing_enabled,
+)
 from .light_cone import LightCone
 
 Bounds = dict[str, PauliLindbladMap]
@@ -129,6 +134,45 @@ def compute_bounds(
     """
     LOGGER.debug(f"Using {num_processes} processes")
 
+    tracer = get_tracer(__name__)
+
+    # Create parent span for the entire bounds computation
+    with tracer.start_as_current_span(
+        "compute_bounds",
+        attributes={
+            "circuit.num_qubits": circuit.num_qubits,
+            "circuit.depth": circuit.depth(),
+            "num_processes": num_processes,
+            "backwards": backwards,
+            "max_num_boxes": max_num_boxes if max_num_boxes is not None else -1,
+        },
+    ) as parent_span:
+        return _compute_bounds_impl(
+            circuit,
+            noise_model_paulis,
+            light_cone,
+            norm_fn,
+            backwards=backwards,
+            max_num_boxes=max_num_boxes,
+            num_processes=num_processes,
+            timeout=timeout,
+            parent_span=parent_span,
+        )
+
+
+def _compute_bounds_impl(
+    circuit: QuantumCircuit,
+    noise_model_paulis: dict[str, QubitSparsePauliList],
+    light_cone: LightCone,
+    norm_fn: Callable[[Pauli, RotationGates], CommutatorBounds],
+    *,
+    backwards: bool,
+    max_num_boxes: int | None,
+    num_processes: int,
+    timeout: float | None,
+    parent_span: Any,
+) -> Bounds:
+    """Internal implementation of compute_bounds with tracing support."""
     net_clifford = Clifford.from_label("I" * circuit.num_qubits)
     rot_gates = RotationGates([], [], [])
 
@@ -178,6 +222,9 @@ def compute_bounds(
 
     start = time.time()
     LOGGER.debug("Starting to spawn bound computation tasks")
+
+    # Inject trace context for propagation to worker processes
+    trace_context = inject_trace_context() if is_tracing_enabled() else None
 
     encountered_num_boxes = 0
 
@@ -230,6 +277,7 @@ def compute_bounds(
             task = pool.apply_async(
                 norm_fn,
                 [pauli],
+                {"trace_context": trace_context},
                 callback=partial(_insert_rate, box_id=box_id, rate_idx=pauli_idx),
             )
             tasks.add(task)
@@ -242,6 +290,13 @@ def compute_bounds(
 
     total_num_tasks = len(tasks)
     LOGGER.debug(f"Total number of spawned tasks: {total_num_tasks}")
+
+    # Add span event for task spawning completion
+    if is_tracing_enabled():
+        parent_span.add_event(
+            "tasks_spawned",
+            {"total_tasks": total_num_tasks, "encountered_boxes": encountered_num_boxes},
+        )
 
     len_progress_indicator = 50
     per_progress_char = total_num_tasks / len_progress_indicator
@@ -257,6 +312,12 @@ def compute_bounds(
                 f"Progress: {progress:{len_progress_indicator}} "
                 f"[{completed}/{total_num_tasks}] {perc:.1f}%"
             )
+            # Add span event for progress tracking
+            if is_tracing_enabled():
+                parent_span.add_event(
+                    "progress_update",
+                    {"completed": completed, "total": total_num_tasks, "percentage": perc},
+                )
             if timeout is not None and (time.time() - start) > timeout:
                 LOGGER.warning(f"Reached user-specified time out of {timeout} seconds!")
                 pool.terminate()
