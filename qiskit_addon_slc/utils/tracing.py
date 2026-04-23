@@ -33,6 +33,109 @@ _tracer_provider: Any = None
 _is_initialized: bool = False
 
 
+class NoOpSpan:
+    """A no-op span that accepts all operations but does nothing.
+
+    This class provides the same interface as OpenTelemetry spans but performs
+    no operations. It's used when tracing is disabled to avoid conditional checks
+    throughout the codebase.
+    """
+
+    def add_event(self, name: str, attributes: dict[str, Any] | None = None) -> None:
+        """No-op implementation of add_event.
+
+        Args:
+            name: Event name (ignored).
+            attributes: Event attributes (ignored).
+        """
+        pass
+
+    def set_attribute(self, key: str, value: Any) -> None:
+        """No-op implementation of set_attribute.
+
+        Args:
+            key: Attribute key (ignored).
+            value: Attribute value (ignored).
+        """
+        pass
+
+    def set_status(self, status: Any) -> None:
+        """No-op implementation of set_status.
+
+        Args:
+            status: Status to set (ignored).
+        """
+        pass
+
+    def record_exception(self, exception: Exception) -> None:
+        """No-op implementation of record_exception.
+
+        Args:
+            exception: Exception to record (ignored).
+        """
+        pass
+
+    def __enter__(self) -> NoOpSpan:
+        """Context manager entry.
+
+        Returns:
+            Self for context manager protocol.
+        """
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        """Context manager exit.
+
+        Args:
+            exc_type: Exception type (ignored).
+            exc_val: Exception value (ignored).
+            exc_tb: Exception traceback (ignored).
+        """
+        pass
+
+
+class NoOpTracer:
+    """A no-op tracer that returns no-op spans.
+
+    This class provides the same interface as OpenTelemetry tracers but returns
+    NoOpSpan instances. It's used when tracing is disabled to avoid conditional
+    checks throughout the codebase.
+    """
+
+    def start_span(self, _name: str, _context: Any = None, **_kwargs: Any) -> NoOpSpan:
+        """Return a no-op span.
+
+        Args:
+            _name: Span name (ignored).
+            _context: Span context (ignored).
+            **_kwargs: Additional arguments (ignored).
+
+        Returns:
+            A NoOpSpan instance.
+        """
+        return NoOpSpan()
+
+    def start_as_current_span(
+        self,
+        _name: str,
+        _context: Any = None,
+        _attributes: dict[str, Any] | None = None,
+        **_kwargs: Any,
+    ) -> NoOpSpan:
+        """Return a no-op span as context manager.
+
+        Args:
+            _name: Span name (ignored).
+            _context: Span context (ignored).
+            _attributes: Span attributes (ignored).
+            **_kwargs: Additional arguments (ignored).
+
+        Returns:
+            A NoOpSpan instance that can be used as a context manager.
+        """
+        return NoOpSpan()
+
+
 def is_tracing_enabled() -> bool:
     """Check if tracing is enabled via environment variable.
 
@@ -131,10 +234,10 @@ def get_tracer(name: str = "qiskit_addon_slc") -> Any:
 
     Returns:
         A Tracer instance if OpenTelemetry is available and tracing is enabled,
-        otherwise None.
+        otherwise a NoOpTracer instance.
     """
     if not HAS_OPENTELEMETRY or not is_tracing_enabled():
-        return None
+        return NoOpTracer()
 
     if not _is_initialized:
         _initialize_tracing()

@@ -78,11 +78,12 @@ def test_is_tracing_enabled_case_insensitive(clean_env):
 
 
 def test_get_tracer_returns_none_when_disabled(clean_env):
-    """Test that get_tracer returns None when tracing is disabled."""
+    """Test that get_tracer returns NoOpTracer when tracing is disabled."""
+    from qiskit_addon_slc.utils.tracing import NoOpTracer
+
     clean_env.setenv("QISKIT_SLC_TRACING_ENABLED", "false")
     tracer = get_tracer("test_module")
-    if not HAS_OPENTELEMETRY:
-        assert tracer is None
+    assert isinstance(tracer, NoOpTracer)
 
 
 @pytest.mark.skipif(not HAS_OPENTELEMETRY, reason="OpenTelemetry not installed")
@@ -203,3 +204,81 @@ def test_context_propagation_round_trip(clean_env):
         ctx = extract_trace_context(carrier)
         # Context should be extractable
         assert ctx is not None
+
+
+def test_noop_span_operations():
+    """Test that NoOpSpan accepts all operations without errors."""
+    from qiskit_addon_slc.utils.tracing import NoOpSpan
+
+    span = NoOpSpan()
+
+    # Test all methods - should not raise any exceptions
+    span.add_event("test_event")
+    span.add_event("test_event_with_attrs", {"key": "value"})
+    span.set_attribute("test_key", "test_value")
+    span.set_status("OK")
+    span.record_exception(Exception("test"))
+
+
+def test_noop_span_context_manager():
+    """Test that NoOpSpan works as a context manager."""
+    from qiskit_addon_slc.utils.tracing import NoOpSpan
+
+    span = NoOpSpan()
+
+    # Should work as context manager
+    with span as s:
+        assert s is span
+        s.add_event("inside_context")
+
+
+def test_noop_tracer_returns_noop_span():
+    """Test that NoOpTracer returns NoOpSpan instances."""
+    from qiskit_addon_slc.utils.tracing import NoOpSpan, NoOpTracer
+
+    tracer = NoOpTracer()
+
+    # Test start_span
+    span = tracer.start_span("test_span")
+    assert isinstance(span, NoOpSpan)
+
+    # Test start_as_current_span
+    span = tracer.start_as_current_span("test_span")
+    assert isinstance(span, NoOpSpan)
+
+    # Test with attributes
+    span = tracer.start_as_current_span("test_span", attributes={"key": "value"})
+    assert isinstance(span, NoOpSpan)
+
+
+def test_noop_tracer_context_manager():
+    """Test that NoOpTracer spans work as context managers."""
+    from qiskit_addon_slc.utils.tracing import NoOpSpan, NoOpTracer
+
+    tracer = NoOpTracer()
+
+    with tracer.start_as_current_span("test_span") as span:
+        assert isinstance(span, NoOpSpan)
+        span.add_event("inside_context")
+        span.set_attribute("key", "value")
+
+
+def test_get_tracer_returns_noop_when_disabled(clean_env):
+    """Test that get_tracer returns NoOpTracer when tracing is disabled."""
+    from qiskit_addon_slc.utils.tracing import NoOpTracer
+
+    clean_env.setenv("QISKIT_SLC_TRACING_ENABLED", "false")
+    tracer = get_tracer("test_module")
+    assert isinstance(tracer, NoOpTracer)
+
+
+def test_get_tracer_returns_noop_when_no_opentelemetry(clean_env):
+    """Test that get_tracer returns NoOpTracer when OpenTelemetry is not available."""
+    from qiskit_addon_slc.utils.tracing import NoOpTracer
+
+    clean_env.setenv("QISKIT_SLC_TRACING_ENABLED", "true")
+
+    # Mock HAS_OPENTELEMETRY to False
+    with patch("qiskit_addon_slc.utils.tracing.HAS_OPENTELEMETRY", False):
+        tracer = get_tracer("test_module")
+        assert isinstance(tracer, NoOpTracer)

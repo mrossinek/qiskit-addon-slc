@@ -137,21 +137,6 @@ def compute_bounds(
     """
     LOGGER.debug(f"Using {num_processes} processes")
 
-    # Branch based on whether tracing is enabled
-    if not is_tracing_enabled():
-        return _compute_bounds_impl(
-            circuit,
-            noise_model_paulis,
-            light_cone,
-            norm_fn,
-            backwards=backwards,
-            max_num_boxes=max_num_boxes,
-            num_processes=num_processes,
-            timeout=timeout,
-            parent_span=None,
-        )
-
-    # Tracing is enabled, wrap in span
     tracer = get_tracer(__name__)
 
     # Create child span if parent_span is provided, otherwise create root span
@@ -163,9 +148,14 @@ def compute_bounds(
     }
 
     # Set context based on whether parent_span is provided
-    from opentelemetry.trace import set_span_in_context
+    # Note: We still need this conditional because set_span_in_context is an OpenTelemetry API
+    # that requires a real span object (NoOpSpan won't work here)
+    if is_tracing_enabled() and parent_span is not None:
+        from opentelemetry.trace import set_span_in_context
 
-    ctx = set_span_in_context(parent_span) if parent_span is not None else None
+        ctx = set_span_in_context(parent_span)
+    else:
+        ctx = None
 
     with tracer.start_as_current_span(
         "compute_bounds", context=ctx, attributes=span_attributes
@@ -219,14 +209,12 @@ def _compute_bounds_impl(
         nonlocal net_clifford
         nonlocal rot_gates
         nonlocal parent_span
-        if parent_span is not None:
-            parent_span.add_event("handling_circuit_instruction_started")
+        parent_span.add_event("handling_circuit_instruction_started")
 
         if light_cone.commutes(instruction):
-            if parent_span is not None:
-                parent_span.add_event(
-                    "handling_circuit_instruction_completed", {"reason": "commuted_with_lightcone"}
-                )
+            parent_span.add_event(
+                "handling_circuit_instruction_completed", {"reason": "commuted_with_lightcone"}
+            )
             return
 
         qargs = find_indices(circuit, instruction)
@@ -234,11 +222,9 @@ def _compute_bounds_impl(
         if isinstance(instruction.operation, Barrier):
             LOGGER.debug(f"Ignoring instruction of type '{type(instruction.operation)}'")
         elif instruction.name in KNOWN_CLIFFS:
-            if parent_span is not None:
-                parent_span.add_event("composing_net_clifford_started")
+            parent_span.add_event("composing_net_clifford_started")
             net_clifford = net_clifford.dot(instruction.operation, qargs)
-            if parent_span is not None:
-                parent_span.add_event("composing_net_clifford_completed")
+            parent_span.add_event("composing_net_clifford_completed")
         else:
             rot_gates.append_circuit_instruction(
                 instruction, qargs, circuit.num_qubits, clifford=net_clifford
@@ -287,8 +273,7 @@ def _compute_bounds_impl(
             for inst in circ_inst.operation.body[::-1]:
                 _handle_circuit_instruction(inst)
 
-        if parent_span is not None:
-            parent_span.add_event("evolving_noise_terms_started")
+        parent_span.add_event("evolving_noise_terms_started")
         # Ensure that the noise model Pauli terms are defined on the entire width of the circuit.
         local_noise_terms = noise_terms.apply_layout(qargs, num_qubits=circuit.num_qubits)
         # NOTE: both FIXMEs below can be resolved by simply implementing QubitSparsePauliList.evolve
@@ -303,8 +288,7 @@ def _compute_bounds_impl(
             ],
             circuit.num_qubits,
         )
-        if parent_span is not None:
-            parent_span.add_event("evolving_noise_terms_completed")
+        parent_span.add_event("evolving_noise_terms_completed")
 
         norm_fn = partial(  # type: ignore[call-arg]
             norm_fn,
@@ -332,11 +316,10 @@ def _compute_bounds_impl(
     LOGGER.debug(f"Total number of spawned tasks: {total_num_tasks}")
 
     # Add span event for task spawning completion
-    if parent_span is not None:
-        parent_span.add_event(
-            "tasks_spawned",
-            {"total_tasks": total_num_tasks, "encountered_boxes": encountered_num_boxes},
-        )
+    parent_span.add_event(
+        "tasks_spawned",
+        {"total_tasks": total_num_tasks, "encountered_boxes": encountered_num_boxes},
+    )
 
     len_progress_indicator = 50
     per_progress_char = total_num_tasks / len_progress_indicator
@@ -353,11 +336,10 @@ def _compute_bounds_impl(
                 f"[{completed}/{total_num_tasks}] {perc:.1f}%"
             )
             # Add span event for progress tracking
-            if parent_span is not None:
-                parent_span.add_event(
-                    "progress_update",
-                    {"completed": completed, "total": total_num_tasks, "percentage": perc},
-                )
+            parent_span.add_event(
+                "progress_update",
+                {"completed": completed, "total": total_num_tasks, "percentage": perc},
+            )
             if timeout is not None and (time.time() - start) > timeout:
                 LOGGER.warning(f"Reached user-specified time out of {timeout} seconds!")
                 pool.terminate()
@@ -375,11 +357,10 @@ def _compute_bounds_impl(
     pool.join()
 
     # Add span event for computation completion
-    if parent_span is not None:
-        parent_span.add_event(
-            "computation_completed",
-            {"completed_tasks": completed, "total_tasks": total_num_tasks},
-        )
+    parent_span.add_event(
+        "computation_completed",
+        {"completed_tasks": completed, "total_tasks": total_num_tasks},
+    )
 
     comm_norms: Bounds = {
         box_id: PauliLindbladMap.from_components(bounds[0], bounds[1])
