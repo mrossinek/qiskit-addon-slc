@@ -138,7 +138,6 @@ def compute_bounds(
 
     # Branch based on whether tracing is enabled
     if not is_tracing_enabled():
-        # Call implementation directly without tracing
         return _compute_bounds_impl(
             circuit,
             noise_model_paulis,
@@ -159,7 +158,6 @@ def compute_bounds(
     # Create child span if parent_span is provided, otherwise create root span
     span_attributes = {
         "circuit.num_qubits": circuit.num_qubits,
-        "circuit.depth": circuit.depth(),
         "num_processes": num_processes,
         "backwards": backwards,
         "max_num_boxes": max_num_boxes if max_num_boxes is not None else -1,
@@ -219,8 +217,15 @@ def _compute_bounds_impl(
         nonlocal circuit
         nonlocal net_clifford
         nonlocal rot_gates
+        nonlocal parent_span
+        if parent_span is not None:
+            parent_span.add_event("handling_circuit_instruction_started")
 
         if light_cone.commutes(instruction):
+            if parent_span is not None:
+                parent_span.add_event(
+                    "handling_circuit_instruction_completed", {"reason": "commuted_with_lightcone"}
+                )
             return
 
         qargs = find_indices(circuit, instruction)
@@ -228,7 +233,11 @@ def _compute_bounds_impl(
         if isinstance(instruction.operation, Barrier):
             LOGGER.debug(f"Ignoring instruction of type '{type(instruction.operation)}'")
         elif instruction.name in KNOWN_CLIFFS:
+            if parent_span is not None:
+                parent_span.add_event("composing_net_clifford_started")
             net_clifford = net_clifford.dot(instruction.operation, qargs)
+            if parent_span is not None:
+                parent_span.add_event("composing_net_clifford_completed")
         else:
             rot_gates.append_circuit_instruction(
                 instruction, qargs, circuit.num_qubits, clifford=net_clifford
@@ -245,6 +254,8 @@ def _compute_bounds_impl(
     tasks = set()
 
     start = time.time()
+    if parent_span is not None:
+        parent_span.add_event("task_spawning_started")
     LOGGER.debug("Starting to spawn bound computation tasks")
 
     # Inject trace context for propagation to worker processes
@@ -275,6 +286,8 @@ def _compute_bounds_impl(
             for inst in circ_inst.operation.body[::-1]:
                 _handle_circuit_instruction(inst)
 
+        if parent_span is not None:
+            parent_span.add_event("evolving_noise_terms_started")
         # Ensure that the noise model Pauli terms are defined on the entire width of the circuit.
         local_noise_terms = noise_terms.apply_layout(qargs, num_qubits=circuit.num_qubits)
         # NOTE: both FIXMEs below can be resolved by simply implementing QubitSparsePauliList.evolve
@@ -289,6 +302,8 @@ def _compute_bounds_impl(
             ],
             circuit.num_qubits,
         )
+        if parent_span is not None:
+            parent_span.add_event("evolving_noise_terms_completed")
 
         norm_fn = partial(  # type: ignore[call-arg]
             norm_fn,

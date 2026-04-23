@@ -48,7 +48,7 @@ from .light_cone import LightCone
 LOGGER = logging.getLogger(__name__)
 
 
-def _time_evolved_norm_backward(
+def time_evolved_norm_backward(
     pauli: Pauli,
     gates: RotationGates,
     *,
@@ -83,11 +83,11 @@ def _time_evolved_norm_backward(
         :math:`E` and state :math:`\rho`, where the norm is the Schatten 1 norm (nuclear norm).
     """
     # Convert the single Pauli to a SparsePauliOp which we can then evolve
-    pauli_op = SparsePauliOp(pauli)
+    pauli = SparsePauliOp(pauli)
 
     # Branch based on whether tracing is enabled
     if not is_tracing_enabled():
-        return _compute_backward_norm(pauli_op, gates, evolution_max_terms, span=None)
+        return _compute_backward_norm(pauli, gates, evolution_max_terms, span=None)
 
     # Tracing is enabled, wrap in span
     from opentelemetry import trace
@@ -102,12 +102,12 @@ def _time_evolved_norm_backward(
         with tracer.start_as_current_span(
             "backward_norm_computation",
             attributes={
-                "pauli.num_qubits": len(pauli),
+                "pauli": str(pauli),
+                "pauli.num_qubits": pauli.num_qubits,
                 "gates.count": len(gates.gates),
-                "evolution_max_terms": evolution_max_terms,
             },
         ) as span:
-            return _compute_backward_norm(pauli_op, gates, evolution_max_terms, span)
+            return _compute_backward_norm(pauli, gates, evolution_max_terms, span)
     finally:
         detach_context(token)
 
@@ -119,6 +119,8 @@ def _compute_backward_norm(
     span: Any | None,
 ) -> CommutatorBounds:
     """Internal implementation of backward norm computation with optional span tracking."""
+    if span is not None:
+        span.add_event("pauli_propagation_started")
     pauli, trunc_onenorm = propagate_through_rotation_gates(
         operator=pauli,
         rot_gates=gates,
@@ -127,19 +129,15 @@ def _compute_backward_norm(
         frame="s",
     )
     trunc_bias = 2 * trunc_onenorm
-
     if span is not None:
+        span.add_event("pauli_propagation_completed")
         span.set_attribute("truncation.one_norm", float(trunc_onenorm))
-        span.set_attribute("truncation.bias", float(trunc_bias))
 
     if trunc_bias >= 2.0:
-        if span is not None:
-            span.add_event("computation_aborted", {"reason": "truncation_bias_exceeds_bound"})
         result = CommutatorBounds(float("NaN"), trunc_bias, False)
         if span is not None:
-            span.set_attribute("result.commutator_bound", "NaN")
-            span.set_attribute("result.truncation_bias", result.truncation_bias)
-            span.set_attribute("result.fallback_to_tri_ineq", result.fallback_to_tri_ineq)
+            span.add_event("computation_aborted", {"reason": "truncation_bias_exceeds_bound"})
+            span.set_attribute("result", result)
         return result
 
     acts_on_zero = np.any(pauli.paulis.x, axis=1)
@@ -154,13 +152,8 @@ def _compute_backward_norm(
     comm_norm = 2 * sqrt_s
 
     result = CommutatorBounds(float(comm_norm), trunc_bias, False)
-
-    # Add result attributes to span
     if span is not None:
-        span.set_attribute("result.commutator_bound", result.commutator_bound)
-        span.set_attribute("result.truncation_bias", result.truncation_bias)
-        span.set_attribute("result.fallback_to_tri_ineq", result.fallback_to_tri_ineq)
-        span.set_attribute("result.min_bound", result.min())
+        span.set_attribute("result", result)
 
     return result
 
@@ -226,8 +219,6 @@ def compute_backward_bounds(
         "compute_backward_bounds",
         attributes={
             "circuit.num_qubits": circuit.num_qubits,
-            "circuit.depth": circuit.depth(),
-            "evolution_max_terms": evolution_max_terms,
         },
     ) as parent_span:
         return _compute_backward_bounds_impl(
@@ -247,27 +238,21 @@ def _compute_backward_bounds_impl(
     **kwargs,
 ) -> Bounds:
     """Internal implementation of backward bounds computation."""
-    # Circuit preparation
     if parent_span is not None:
         parent_span.add_event("circuit_preparation_started")
     circuit = remove_measure(circuit).inverse()
     if parent_span is not None:
         parent_span.add_event("circuit_inversion_completed")
 
-    # Create norm function
-    if parent_span is not None:
-        parent_span.add_event("norm_function_created")
     norm_fn = partial(
-        _time_evolved_norm_backward,
+        time_evolved_norm_backward,
         evolution_max_terms=evolution_max_terms,
     )
 
-    # Initialize light cone
     if parent_span is not None:
         parent_span.add_event("light_cone_initialization")
     lc = LightCone.initialize_from_measurements(circuit, measure_active=True)
 
-    # Compute bounds
     if parent_span is not None:
         parent_span.add_event("bounds_computation_started")
     comm_norms = compute_bounds(
