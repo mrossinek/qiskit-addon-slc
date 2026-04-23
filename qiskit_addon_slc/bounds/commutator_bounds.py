@@ -26,6 +26,7 @@ from functools import partial
 from typing import Any, NamedTuple
 
 import numpy as np
+from opentelemetry import trace
 from pauli_prop.propagation import (
     KNOWN_CLIFFS,
     RotationGates,
@@ -102,6 +103,7 @@ def compute_bounds(
     max_num_boxes: int | None = None,
     num_processes: int = 1,
     timeout: float | None = None,
+    parent_span: Any | None = None,
 ) -> Bounds:
     """Computes the unequal time commutator bounds.
 
@@ -128,6 +130,8 @@ def compute_bounds(
         timeout: an optional timeout (in seconds) after which all remaining layers are filled with
             trivial numerical bounds of ``2.0``. Note, that this is not a strict timeout and the
             layer being processed at the time of reaching this timeout will complete normally.
+        parent_span: an optional parent span for distributed tracing. If provided, a child span
+            will be created under it. If None, a root span will be created.
 
     Returns:
         The computed unequal time commutator bounds.
@@ -136,17 +140,21 @@ def compute_bounds(
 
     tracer = get_tracer(__name__)
 
-    # Create parent span for the entire bounds computation
+    # Create child span if parent_span is provided, otherwise create root span
+    span_attributes = {
+        "circuit.num_qubits": circuit.num_qubits,
+        "circuit.depth": circuit.depth(),
+        "num_processes": num_processes,
+        "backwards": backwards,
+        "max_num_boxes": max_num_boxes if max_num_boxes is not None else -1,
+    }
+
+    # Set context based on whether parent_span is provided
+    ctx = trace.set_span_in_context(parent_span) if parent_span is not None else None
+
     with tracer.start_as_current_span(
-        "compute_bounds",
-        attributes={
-            "circuit.num_qubits": circuit.num_qubits,
-            "circuit.depth": circuit.depth(),
-            "num_processes": num_processes,
-            "backwards": backwards,
-            "max_num_boxes": max_num_boxes if max_num_boxes is not None else -1,
-        },
-    ) as parent_span:
+        "compute_bounds", context=ctx, attributes=span_attributes
+    ) as child_span:
         return _compute_bounds_impl(
             circuit,
             noise_model_paulis,
@@ -156,7 +164,7 @@ def compute_bounds(
             max_num_boxes=max_num_boxes,
             num_processes=num_processes,
             timeout=timeout,
-            parent_span=parent_span,
+            parent_span=child_span,
         )
 
 
@@ -333,6 +341,13 @@ def _compute_bounds_impl(
     LOGGER.info(f"Successfully completed [{completed}/{total_num_tasks}] tasks!")
 
     pool.join()
+
+    # Add span event for computation completion
+    if is_tracing_enabled():
+        parent_span.add_event(
+            "computation_completed",
+            {"completed_tasks": completed, "total_tasks": total_num_tasks},
+        )
 
     comm_norms: Bounds = {
         box_id: PauliLindbladMap.from_components(bounds[0], bounds[1])

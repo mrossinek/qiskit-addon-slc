@@ -190,22 +190,43 @@ def compute_backward_bounds(
     LOGGER.info("Evolving Pauli error terms backwards through the circuit.")
     LOGGER.info("Modelling errors as though they happen *after* each noise layer.")
 
-    circuit = remove_measure(circuit).inverse()
+    tracer = get_tracer(__name__)
 
-    norm_fn = partial(
-        _time_evolved_norm_backward,
-        evolution_max_terms=evolution_max_terms,
-    )
+    with tracer.start_as_current_span(
+        "compute_backward_bounds",
+        attributes={
+            "circuit.num_qubits": circuit.num_qubits,
+            "circuit.depth": circuit.depth(),
+            "evolution_max_terms": evolution_max_terms,
+        },
+    ) as parent_span:
+        # Circuit preparation
+        parent_span.add_event("circuit_preparation_started")
+        circuit = remove_measure(circuit).inverse()
+        parent_span.add_event("circuit_inversion_completed")
 
-    lc = LightCone.initialize_from_measurements(circuit, measure_active=True)
+        # Create norm function
+        parent_span.add_event("norm_function_created")
+        norm_fn = partial(
+            _time_evolved_norm_backward,
+            evolution_max_terms=evolution_max_terms,
+        )
 
-    comm_norms = compute_bounds(
-        circuit,
-        noise_model_paulis,
-        lc,
-        norm_fn,
-        backwards=True,
-        **kwargs,
-    )
+        # Initialize light cone
+        parent_span.add_event("light_cone_initialization")
+        lc = LightCone.initialize_from_measurements(circuit, measure_active=True)
 
-    return comm_norms
+        # Compute bounds
+        parent_span.add_event("bounds_computation_started")
+        comm_norms = compute_bounds(
+            circuit,
+            noise_model_paulis,
+            lc,
+            norm_fn,
+            backwards=True,
+            parent_span=parent_span,
+            **kwargs,
+        )
+        parent_span.add_event("bounds_computation_completed")
+
+        return comm_norms

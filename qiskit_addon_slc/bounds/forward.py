@@ -378,37 +378,62 @@ def compute_forward_bounds(
     LOGGER.info("Evolving Pauli error terms forwards through the circuit.")
     LOGGER.info("Modelling errors as though they happen *after* each noise layer.")
 
-    circuit = remove_measure(circuit)
+    tracer = get_tracer(__name__)
 
-    if (
-        not np.isclose(atol, 1e-8, atol=1e-9)
-        and np.isclose(atol_simplify, 1e-8, atol=1e-9)
-        and np.isclose(atol_eigenvalue, 1e-8, atol=1e-9)
-    ):
-        # the user specified the deprecated `atol` argument but neither of the other two new
-        # replacement arguments
-        atol_simplify = atol  # pragma: no cover
-        atol_eigenvalue = atol  # pragma: no cover
+    with tracer.start_as_current_span(
+        "compute_forward_bounds",
+        attributes={
+            "circuit.num_qubits": circuit.num_qubits,
+            "circuit.depth": circuit.depth(),
+            "observable.num_qubits": len(pauli),
+            "evolution_max_terms": evolution_max_terms,
+            "eigval_max_qubits": eigval_max_qubits,
+            "atol_simplify": atol_simplify,
+            "atol_eigenvalue": atol_eigenvalue,
+        },
+    ) as parent_span:
+        # Circuit preparation
+        parent_span.add_event("circuit_preparation_started")
+        circuit = remove_measure(circuit)
+        parent_span.add_event("circuit_preparation_completed")
 
-    norm_fn = partial(
-        time_evolved_norm_forward,
-        observable=pauli,
-        evolution_max_terms=evolution_max_terms,
-        eigval_max_qubits=eigval_max_qubits,
-        comm_norm_order=2,
-        atol_simplify=atol_simplify,
-        atol_eigenvalue=atol_eigenvalue,
-    )
+        if (
+            not np.isclose(atol, 1e-8, atol=1e-9)
+            and np.isclose(atol_simplify, 1e-8, atol=1e-9)
+            and np.isclose(atol_eigenvalue, 1e-8, atol=1e-9)
+        ):
+            # the user specified the deprecated `atol` argument but neither of the other two new
+            # replacement arguments
+            atol_simplify = atol  # pragma: no cover
+            atol_eigenvalue = atol  # pragma: no cover
 
-    lc = LightCone.initialize_from_pauli(circuit, pauli)
+        # Create norm function
+        parent_span.add_event("norm_function_created")
+        norm_fn = partial(
+            time_evolved_norm_forward,
+            observable=pauli,
+            evolution_max_terms=evolution_max_terms,
+            eigval_max_qubits=eigval_max_qubits,
+            comm_norm_order=2,
+            atol_simplify=atol_simplify,
+            atol_eigenvalue=atol_eigenvalue,
+        )
 
-    comm_norms = compute_bounds(
-        circuit,
-        noise_model_paulis,
-        lc,
-        norm_fn,
-        backwards=False,
-        **kwargs,
-    )
+        # Initialize light cone
+        parent_span.add_event("light_cone_initialization")
+        lc = LightCone.initialize_from_pauli(circuit, pauli)
 
-    return comm_norms
+        # Compute bounds
+        parent_span.add_event("bounds_computation_started")
+        comm_norms = compute_bounds(
+            circuit,
+            noise_model_paulis,
+            lc,
+            norm_fn,
+            backwards=False,
+            parent_span=parent_span,
+            **kwargs,
+        )
+        parent_span.add_event("bounds_computation_completed")
+
+        return comm_norms
