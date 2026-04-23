@@ -144,210 +144,184 @@ def compute_bounds(
             "max_num_boxes": max_num_boxes if max_num_boxes is not None else -1,
         },
     ) as span:
-        return _compute_bounds_impl(
-            circuit,
-            noise_model_paulis,
-            light_cone,
-            norm_fn,
-            backwards=backwards,
-            max_num_boxes=max_num_boxes,
-            num_processes=num_processes,
-            timeout=timeout,
-            parent_span=span,
-        )
+        net_clifford = Clifford.from_label("I" * circuit.num_qubits)
+        rot_gates = RotationGates([], [], [])
 
+        def _handle_circuit_instruction(instruction: CircuitInstruction) -> None:
+            """Handles a circuit instruction.
 
-def _compute_bounds_impl(
-    circuit: QuantumCircuit,
-    noise_model_paulis: dict[str, QubitSparsePauliList],
-    light_cone: LightCone,
-    norm_fn: Callable[[Pauli, RotationGates], CommutatorBounds],
-    *,
-    backwards: bool,
-    max_num_boxes: int | None,
-    num_processes: int,
-    timeout: float | None,
-    parent_span: Any,
-) -> Bounds:
-    """Internal implementation of compute_bounds with tracing support."""
-    net_clifford = Clifford.from_label("I" * circuit.num_qubits)
-    rot_gates = RotationGates([], [], [])
+            1. If the instruction commutes with the current light-cone, do nothing. Note, that calling
+               ``light_cone.commutes`` will append the provided instruction to the stateful
+               ``light_cone`` object!
+            2. Find ``qargs`` which are the indices of the instruction's qubits in the context of the
+               global circuit from which this instruction stems.
+            3. If the gate is Clifford, update our global ``net_clifford``, effectively accumulating all
+               Clifford gates at the beginning of the circuit.
+            4. If the gate is *not* Clifford, append it to our global ``rot_gates`` under which our
+               Pauli terms are later going to be evolved. When doing so, we provide ``net_clifford`` to
+               ensure the rotation gate gets moved through it, ensuring the ``net_clifford`` remains at
+               the beginning of the circuit.
+            """
+            nonlocal light_cone
+            nonlocal circuit
+            nonlocal net_clifford
+            nonlocal rot_gates
+            nonlocal span
+            span.add_event("handling_circuit_instruction_started")
 
-    def _handle_circuit_instruction(instruction: CircuitInstruction) -> None:
-        """Handles a circuit instruction.
+            if light_cone.commutes(instruction):
+                span.add_event(
+                    "handling_circuit_instruction_completed", {"reason": "commuted_with_lightcone"}
+                )
+                return
 
-        1. If the instruction commutes with the current light-cone, do nothing. Note, that calling
-           ``light_cone.commutes`` will append the provided instruction to the stateful
-           ``light_cone`` object!
-        2. Find ``qargs`` which are the indices of the instruction's qubits in the context of the
-           global circuit from which this instruction stems.
-        3. If the gate is Clifford, update our global ``net_clifford``, effectively accumulating all
-           Clifford gates at the beginning of the circuit.
-        4. If the gate is *not* Clifford, append it to our global ``rot_gates`` under which our
-           Pauli terms are later going to be evolved. When doing so, we provide ``net_clifford`` to
-           ensure the rotation gate gets moved through it, ensuring the ``net_clifford`` remains at
-           the beginning of the circuit.
-        """
-        nonlocal light_cone
-        nonlocal circuit
-        nonlocal net_clifford
-        nonlocal rot_gates
-        nonlocal parent_span
-        parent_span.add_event("handling_circuit_instruction_started")
+            qargs = find_indices(circuit, instruction)
 
-        if light_cone.commutes(instruction):
-            parent_span.add_event(
-                "handling_circuit_instruction_completed", {"reason": "commuted_with_lightcone"}
+            if isinstance(instruction.operation, Barrier):
+                LOGGER.debug(f"Ignoring instruction of type '{type(instruction.operation)}'")
+            elif instruction.name in KNOWN_CLIFFS:
+                span.add_event("composing_net_clifford_started")
+                net_clifford = net_clifford.dot(instruction.operation, qargs)
+                span.add_event("composing_net_clifford_completed")
+            else:
+                rot_gates.append_circuit_instruction(
+                    instruction, qargs, circuit.num_qubits, clifford=net_clifford
+                )
+
+        gathered_bounds: dict[str, tuple[np.ndarray, QubitSparsePauliList]] = {}
+
+        def _insert_rate(bound: CommutatorBounds, box_id: str, rate_idx: int) -> None:
+            nonlocal gathered_bounds
+
+            gathered_bounds[box_id][0][rate_idx] = bound.min()
+
+        pool = mp.Pool(num_processes)
+        tasks = set()
+
+        start = time.time()
+        if span is not None:
+            span.add_event("task_spawning_started")
+        LOGGER.debug("Starting to spawn bound computation tasks")
+
+        # Prepare trace context for propagation to worker processes
+        trace_context = prepare_worker_context()
+
+        encountered_num_boxes = 0
+
+        for circ_inst, qargs, box_id, noise_id in iter_circuit(circuit, reverse=True):
+            if box_id is None:
+                _handle_circuit_instruction(circ_inst)
+                continue
+
+            # NOTE: we know for a fact that noise_id can only be None when box_id is None
+            assert noise_id is not None
+
+            noise_terms: QubitSparsePauliList = noise_model_paulis[noise_id]
+            # pre-populate computed bounds with trivial upper bound
+            gathered_bounds[box_id] = (np.full(len(noise_terms), 2.0), noise_terms)
+
+            encountered_num_boxes += 1
+            if max_num_boxes is not None and encountered_num_boxes > max_num_boxes:
+                # skipping actual bound computation and limiting bound estimate to trivial value
+                continue
+
+            if backwards:
+                # NOTE: we unroll the BoxOp immediately to allow gates contained within the box be
+                # pruned by the LightCone pass
+                for inst in circ_inst.operation.body[::-1]:
+                    _handle_circuit_instruction(inst)
+
+            span.add_event("evolving_noise_terms_started")
+            # Ensure that the noise model Pauli terms are defined on the entire width of the circuit.
+            local_noise_terms = noise_terms.apply_layout(qargs, num_qubits=circuit.num_qubits)
+            # NOTE: both FIXMEs below can be resolved by simply implementing QubitSparsePauliList.evolve
+            local_noise_terms = QubitSparsePauliList.from_sparse_list(
+                [
+                    tuple(parts)
+                    # FIXME: we convert temporarily to SparsePauliOp to leverage its to_sparse_list
+                    for *parts, _ in SparsePauliOp(
+                        # FIXME: we convert temporarily to PauliList to leverage its evolve
+                        local_noise_terms.to_pauli_list().evolve(net_clifford, frame="s")
+                    ).to_sparse_list()
+                ],
+                circuit.num_qubits,
             )
-            return
+            span.add_event("evolving_noise_terms_completed")
 
-        qargs = find_indices(circuit, instruction)
-
-        if isinstance(instruction.operation, Barrier):
-            LOGGER.debug(f"Ignoring instruction of type '{type(instruction.operation)}'")
-        elif instruction.name in KNOWN_CLIFFS:
-            parent_span.add_event("composing_net_clifford_started")
-            net_clifford = net_clifford.dot(instruction.operation, qargs)
-            parent_span.add_event("composing_net_clifford_completed")
-        else:
-            rot_gates.append_circuit_instruction(
-                instruction, qargs, circuit.num_qubits, clifford=net_clifford
-            )
-
-    gathered_bounds: dict[str, tuple[np.ndarray, QubitSparsePauliList]] = {}
-
-    def _insert_rate(bound: CommutatorBounds, box_id: str, rate_idx: int) -> None:
-        nonlocal gathered_bounds
-
-        gathered_bounds[box_id][0][rate_idx] = bound.min()
-
-    pool = mp.Pool(num_processes)
-    tasks = set()
-
-    start = time.time()
-    if parent_span is not None:
-        parent_span.add_event("task_spawning_started")
-    LOGGER.debug("Starting to spawn bound computation tasks")
-
-    # Prepare trace context for propagation to worker processes
-    trace_context = prepare_worker_context()
-
-    encountered_num_boxes = 0
-
-    for circ_inst, qargs, box_id, noise_id in iter_circuit(circuit, reverse=True):
-        if box_id is None:
-            _handle_circuit_instruction(circ_inst)
-            continue
-
-        # NOTE: we know for a fact that noise_id can only be None when box_id is None
-        assert noise_id is not None
-
-        noise_terms: QubitSparsePauliList = noise_model_paulis[noise_id]
-        # pre-populate computed bounds with trivial upper bound
-        gathered_bounds[box_id] = (np.full(len(noise_terms), 2.0), noise_terms)
-
-        encountered_num_boxes += 1
-        if max_num_boxes is not None and encountered_num_boxes > max_num_boxes:
-            # skipping actual bound computation and limiting bound estimate to trivial value
-            continue
-
-        if backwards:
-            # NOTE: we unroll the BoxOp immediately to allow gates contained within the box be
-            # pruned by the LightCone pass
-            for inst in circ_inst.operation.body[::-1]:
-                _handle_circuit_instruction(inst)
-
-        parent_span.add_event("evolving_noise_terms_started")
-        # Ensure that the noise model Pauli terms are defined on the entire width of the circuit.
-        local_noise_terms = noise_terms.apply_layout(qargs, num_qubits=circuit.num_qubits)
-        # NOTE: both FIXMEs below can be resolved by simply implementing QubitSparsePauliList.evolve
-        local_noise_terms = QubitSparsePauliList.from_sparse_list(
-            [
-                tuple(parts)
-                # FIXME: we convert temporarily to SparsePauliOp to leverage its to_sparse_list
-                for *parts, _ in SparsePauliOp(
-                    # FIXME: we convert temporarily to PauliList to leverage its evolve
-                    local_noise_terms.to_pauli_list().evolve(net_clifford, frame="s")
-                ).to_sparse_list()
-            ],
-            circuit.num_qubits,
-        )
-        parent_span.add_event("evolving_noise_terms_completed")
-
-        norm_fn = partial(  # type: ignore[call-arg]
-            norm_fn,
-            gates=RotationGates(
-                rot_gates.gates[::-1], rot_gates.qargs[::-1], rot_gates.thetas[::-1]
-            ),
-        )
-
-        for pauli_idx, pauli in enumerate(local_noise_terms.to_pauli_list()):
-            task = pool.apply_async(
+            norm_fn = partial(  # type: ignore[call-arg]
                 norm_fn,
-                [pauli],
-                {"trace_context": trace_context},
-                callback=partial(_insert_rate, box_id=box_id, rate_idx=pauli_idx),
+                gates=RotationGates(
+                    rot_gates.gates[::-1], rot_gates.qargs[::-1], rot_gates.thetas[::-1]
+                ),
             )
-            tasks.add(task)
 
-        if not backwards:
-            # NOTE: we unroll the BoxOp immediately to allow gates contained within the box be
-            # pruned by the LightCone pass
-            for inst in circ_inst.operation.body[::-1]:
-                _handle_circuit_instruction(inst)
+            for pauli_idx, pauli in enumerate(local_noise_terms.to_pauli_list()):
+                task = pool.apply_async(
+                    norm_fn,
+                    [pauli],
+                    {"trace_context": trace_context},
+                    callback=partial(_insert_rate, box_id=box_id, rate_idx=pauli_idx),
+                )
+                tasks.add(task)
 
-    total_num_tasks = len(tasks)
-    LOGGER.debug(f"Total number of spawned tasks: {total_num_tasks}")
+            if not backwards:
+                # NOTE: we unroll the BoxOp immediately to allow gates contained within the box be
+                # pruned by the LightCone pass
+                for inst in circ_inst.operation.body[::-1]:
+                    _handle_circuit_instruction(inst)
 
-    # Add span event for task spawning completion
-    parent_span.add_event(
-        "tasks_spawned",
-        {"total_tasks": total_num_tasks, "encountered_boxes": encountered_num_boxes},
-    )
+        total_num_tasks = len(tasks)
+        LOGGER.debug(f"Total number of spawned tasks: {total_num_tasks}")
 
-    len_progress_indicator = 50
-    per_progress_char = total_num_tasks / len_progress_indicator
+        # Add span event for task spawning completion
+        span.add_event(
+            "tasks_spawned",
+            {"total_tasks": total_num_tasks, "encountered_boxes": encountered_num_boxes},
+        )
 
-    try:
-        while tasks:
-            next(iter(tasks)).wait(slc_globals.PROGRESS_POLLING_PERIOD)
-            tasks = {t for t in tasks if not t.ready()}
-            completed = total_num_tasks - len(tasks)
-            perc = (completed / total_num_tasks) * 100
-            progress = "." * int(completed / per_progress_char)
-            LOGGER.info(
-                f"Progress: {progress:{len_progress_indicator}} "
-                f"[{completed}/{total_num_tasks}] {perc:.1f}%"
-            )
-            # Add span event for progress tracking
-            parent_span.add_event(
-                "progress_update",
-                {"completed": completed, "total": total_num_tasks, "percentage": perc},
-            )
-            if timeout is not None and (time.time() - start) > timeout:
-                LOGGER.warning(f"Reached user-specified time out of {timeout} seconds!")
-                pool.terminate()
-                break
-        else:
-            pool.close()
-    except KeyboardInterrupt:
-        LOGGER.warning("Caught KeyboardInterrupt! Terminating pending bound computations.")
-        pool.terminate()
+        len_progress_indicator = 50
+        per_progress_char = total_num_tasks / len_progress_indicator
 
-    tasks = {t for t in tasks if not t.ready()}
-    completed = total_num_tasks - len(tasks)
-    LOGGER.info(f"Successfully completed [{completed}/{total_num_tasks}] tasks!")
+        try:
+            while tasks:
+                next(iter(tasks)).wait(slc_globals.PROGRESS_POLLING_PERIOD)
+                tasks = {t for t in tasks if not t.ready()}
+                completed = total_num_tasks - len(tasks)
+                perc = (completed / total_num_tasks) * 100
+                progress = "." * int(completed / per_progress_char)
+                LOGGER.info(
+                    f"Progress: {progress:{len_progress_indicator}} "
+                    f"[{completed}/{total_num_tasks}] {perc:.1f}%"
+                )
+                # Add span event for progress tracking
+                span.add_event(
+                    "progress_update",
+                    {"completed": completed, "total": total_num_tasks, "percentage": perc},
+                )
+                if timeout is not None and (time.time() - start) > timeout:
+                    LOGGER.warning(f"Reached user-specified time out of {timeout} seconds!")
+                    pool.terminate()
+                    break
+            else:
+                pool.close()
+        except KeyboardInterrupt:
+            LOGGER.warning("Caught KeyboardInterrupt! Terminating pending bound computations.")
+            pool.terminate()
 
-    pool.join()
+        tasks = {t for t in tasks if not t.ready()}
+        completed = total_num_tasks - len(tasks)
+        LOGGER.info(f"Successfully completed [{completed}/{total_num_tasks}] tasks!")
 
-    # Add span event for computation completion
-    parent_span.add_event(
-        "computation_completed",
-        {"completed_tasks": completed, "total_tasks": total_num_tasks},
-    )
+        pool.join()
 
-    comm_norms: Bounds = {
-        box_id: PauliLindbladMap.from_components(bounds[0], bounds[1])
-        for box_id, bounds in gathered_bounds.items()
-    }
-    return comm_norms
+        # Add span event for computation completion
+        span.add_event(
+            "computation_completed",
+            {"completed_tasks": completed, "total_tasks": total_num_tasks},
+        )
+
+        comm_norms: Bounds = {
+            box_id: PauliLindbladMap.from_components(bounds[0], bounds[1])
+            for box_id, bounds in gathered_bounds.items()
+        }
+        return comm_norms

@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import logging
 from functools import partial
-from typing import Any
 
 import numpy as np
 from pauli_prop.propagation import (
@@ -90,53 +89,43 @@ def time_evolved_norm_backward(
             "gates.count": len(gates.gates),
         },
     ) as span:
-        return _compute_backward_norm(pauli, gates, evolution_max_terms, span)
+        span.add_event("pauli_propagation_started")
+        pauli, trunc_onenorm = propagate_through_rotation_gates(
+            operator=pauli,
+            rot_gates=gates,
+            max_terms=evolution_max_terms,
+            atol=slc_globals.ZERO_ATOL,
+            frame="s",
+        )
+        trunc_bias = float(2 * trunc_onenorm)
+        span.add_event("pauli_propagation_completed")
+        span.set_attribute("truncation.one_norm", float(trunc_onenorm))
 
+        if trunc_bias >= 2.0:
+            result = CommutatorBounds(float("NaN"), trunc_bias, False)
+            span.add_event("computation_aborted", {"reason": "truncation_bias_exceeds_bound"})
+            span.set_attribute("result.commutator_bound", result.commutator_bound)
+            span.set_attribute("result.truncation_bias", result.truncation_bias)
+            span.set_attribute("result.fallback_to_tri_ineq", result.fallback_to_tri_ineq)
+            return result
 
-def _compute_backward_norm(
-    pauli: SparsePauliOp,
-    gates: RotationGates,
-    evolution_max_terms: int,
-    span: Any,
-) -> CommutatorBounds:
-    """Internal implementation of backward norm computation with span tracking."""
-    span.add_event("pauli_propagation_started")
-    pauli, trunc_onenorm = propagate_through_rotation_gates(
-        operator=pauli,
-        rot_gates=gates,
-        max_terms=evolution_max_terms,
-        atol=slc_globals.ZERO_ATOL,
-        frame="s",
-    )
-    trunc_bias = float(2 * trunc_onenorm)
-    span.add_event("pauli_propagation_completed")
-    span.set_attribute("truncation.one_norm", float(trunc_onenorm))
+        acts_on_zero = np.any(pauli.paulis.x, axis=1)
+        x = pauli.paulis.x[acts_on_zero]
+        z = pauli.paulis.z[acts_on_zero]
+        c = pauli.coeffs[acts_on_zero]
 
-    if trunc_bias >= 2.0:
-        result = CommutatorBounds(float("NaN"), trunc_bias, False)
-        span.add_event("computation_aborted", {"reason": "truncation_bias_exceeds_bound"})
+        uniques, which_unique_x = np.unique(x, return_inverse=True, axis=0)
+        s = np.zeros(len(uniques), dtype=complex)
+        np.add.at(s, which_unique_x, c * ((1j) ** np.sum(z * x, axis=1)))
+        sqrt_s = np.linalg.norm(s)
+        comm_norm = float(2 * sqrt_s)
+
+        result = CommutatorBounds(comm_norm, trunc_bias, False)
         span.set_attribute("result.commutator_bound", result.commutator_bound)
         span.set_attribute("result.truncation_bias", result.truncation_bias)
         span.set_attribute("result.fallback_to_tri_ineq", result.fallback_to_tri_ineq)
+
         return result
-
-    acts_on_zero = np.any(pauli.paulis.x, axis=1)
-    x = pauli.paulis.x[acts_on_zero]
-    z = pauli.paulis.z[acts_on_zero]
-    c = pauli.coeffs[acts_on_zero]
-
-    uniques, which_unique_x = np.unique(x, return_inverse=True, axis=0)
-    s = np.zeros(len(uniques), dtype=complex)
-    np.add.at(s, which_unique_x, c * ((1j) ** np.sum(z * x, axis=1)))
-    sqrt_s = np.linalg.norm(s)
-    comm_norm = float(2 * sqrt_s)
-
-    result = CommutatorBounds(comm_norm, trunc_bias, False)
-    span.set_attribute("result.commutator_bound", result.commutator_bound)
-    span.set_attribute("result.truncation_bias", result.truncation_bias)
-    span.set_attribute("result.fallback_to_tri_ineq", result.fallback_to_tri_ineq)
-
-    return result
 
 
 def compute_backward_bounds(
@@ -188,45 +177,28 @@ def compute_backward_bounds(
             "circuit.num_qubits": circuit.num_qubits,
         },
     ) as span:
-        return _compute_backward_bounds_impl(
+        span.add_event("circuit_preparation_started")
+        circuit = remove_measure(circuit).inverse()
+        span.add_event("circuit_inversion_completed")
+
+        norm_fn = partial(
+            time_evolved_norm_backward,
+            evolution_max_terms=evolution_max_terms,
+        )
+
+        span.add_event("light_cone_initialization")
+        lc = LightCone.initialize_from_measurements(circuit, measure_active=True)
+
+        span.add_event("bounds_computation_started")
+        comm_norms = compute_bounds(
             circuit,
             noise_model_paulis,
-            evolution_max_terms,
+            lc,
+            norm_fn,
+            backwards=True,
             parent_span=span,
             **kwargs,
         )
+        span.add_event("bounds_computation_completed")
 
-
-def _compute_backward_bounds_impl(
-    circuit: QuantumCircuit,
-    noise_model_paulis: dict[str, QubitSparsePauliList],
-    evolution_max_terms: int,
-    parent_span: Any,
-    **kwargs,
-) -> Bounds:
-    """Internal implementation of backward bounds computation."""
-    parent_span.add_event("circuit_preparation_started")
-    circuit = remove_measure(circuit).inverse()
-    parent_span.add_event("circuit_inversion_completed")
-
-    norm_fn = partial(
-        time_evolved_norm_backward,
-        evolution_max_terms=evolution_max_terms,
-    )
-
-    parent_span.add_event("light_cone_initialization")
-    lc = LightCone.initialize_from_measurements(circuit, measure_active=True)
-
-    parent_span.add_event("bounds_computation_started")
-    comm_norms = compute_bounds(
-        circuit,
-        noise_model_paulis,
-        lc,
-        norm_fn,
-        backwards=True,
-        parent_span=parent_span,
-        **kwargs,
-    )
-    parent_span.add_event("bounds_computation_completed")
-
-    return comm_norms
+        return comm_norms
