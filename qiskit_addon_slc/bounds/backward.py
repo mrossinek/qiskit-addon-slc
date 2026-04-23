@@ -88,18 +88,17 @@ def time_evolved_norm_backward(
             "gates.count": len(gates.gates),
         },
     ) as span:
-        span.add_event("pauli_propagation_started")
-        pauli, trunc_onenorm = propagate_through_rotation_gates(
-            operator=pauli,
-            rot_gates=gates,
-            max_terms=evolution_max_terms,
-            atol=slc_globals.ZERO_ATOL,
-            frame="s",
-        )
-        trunc_bias = float(2 * trunc_onenorm)
-        span.add_event("pauli_propagation_completed")
-        span.set_attribute("truncation.one_norm", float(trunc_onenorm))
+        with traced_span("pauli_prop") as inner_span:
+            pauli, trunc_onenorm = propagate_through_rotation_gates(
+                operator=pauli,
+                rot_gates=gates,
+                max_terms=evolution_max_terms,
+                atol=slc_globals.ZERO_ATOL,
+                frame="s",
+            )
+            inner_span.set_attribute("pauli_prop.one_norm", float(trunc_onenorm))
 
+        trunc_bias = float(2 * trunc_onenorm)
         if trunc_bias >= 2.0:
             result = CommutatorBounds(float("NaN"), trunc_bias, False)
             span.add_event("computation_aborted", {"reason": "truncation_bias_exceeds_bound"})
@@ -175,9 +174,8 @@ def compute_backward_bounds(
             "circuit.num_qubits": circuit.num_qubits,
         },
     ) as span:
-        span.add_event("circuit_preparation_started")
+        span.add_event("circuit_preparation")
         circuit = remove_measure(circuit).inverse()
-        span.add_event("circuit_inversion_completed")
 
         norm_fn = partial(
             time_evolved_norm_backward,
@@ -187,7 +185,7 @@ def compute_backward_bounds(
         span.add_event("light_cone_initialization")
         lc = LightCone.initialize_from_measurements(circuit, measure_active=True)
 
-        span.add_event("bounds_computation_started")
+        span.add_event("bounds_computation")
         comm_norms = compute_bounds(
             circuit,
             noise_model_paulis,
@@ -197,6 +195,5 @@ def compute_backward_bounds(
             parent_span=span,
             **kwargs,
         )
-        span.add_event("bounds_computation_completed")
 
         return comm_norms

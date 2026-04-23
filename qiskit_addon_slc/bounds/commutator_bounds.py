@@ -168,20 +168,21 @@ def compute_bounds(
             nonlocal span
             span.add_event("handling_circuit_instruction_started")
 
-            if light_cone.commutes(instruction):
-                span.add_event(
-                    "handling_circuit_instruction_completed", {"reason": "commuted_with_lightcone"}
-                )
-                return
+            with traced_span("light_cone.commutes"):
+                if light_cone.commutes(instruction):
+                    span.add_event(
+                        "handling_circuit_instruction_completed",
+                        {"reason": "commuted_with_lightcone"},
+                    )
+                    return
 
             qargs = find_indices(circuit, instruction)
 
             if isinstance(instruction.operation, Barrier):
                 LOGGER.debug(f"Ignoring instruction of type '{type(instruction.operation)}'")
             elif instruction.name in KNOWN_CLIFFS:
-                span.add_event("composing_net_clifford_started")
-                net_clifford = net_clifford.dot(instruction.operation, qargs)
-                span.add_event("composing_net_clifford_completed")
+                with traced_span("net_clifford.dot"):
+                    net_clifford = net_clifford.dot(instruction.operation, qargs)
             else:
                 rot_gates.append_circuit_instruction(
                     instruction, qargs, circuit.num_qubits, clifford=net_clifford
@@ -230,22 +231,21 @@ def compute_bounds(
                 for inst in circ_inst.operation.body[::-1]:
                     _handle_circuit_instruction(inst)
 
-            span.add_event("evolving_noise_terms_started")
-            # Ensure that the noise model Pauli terms are defined on the entire width of the circuit.
-            local_noise_terms = noise_terms.apply_layout(qargs, num_qubits=circuit.num_qubits)
-            # NOTE: both FIXMEs below can be resolved by simply implementing QubitSparsePauliList.evolve
-            local_noise_terms = QubitSparsePauliList.from_sparse_list(
-                [
-                    tuple(parts)
-                    # FIXME: we convert temporarily to SparsePauliOp to leverage its to_sparse_list
-                    for *parts, _ in SparsePauliOp(
-                        # FIXME: we convert temporarily to PauliList to leverage its evolve
-                        local_noise_terms.to_pauli_list().evolve(net_clifford, frame="s")
-                    ).to_sparse_list()
-                ],
-                circuit.num_qubits,
-            )
-            span.add_event("evolving_noise_terms_completed")
+            with traced_span("noise_terms.evolve"):
+                # Ensure that the noise model Pauli terms are defined on the entire width of the circuit.
+                local_noise_terms = noise_terms.apply_layout(qargs, num_qubits=circuit.num_qubits)
+                # NOTE: both FIXMEs below can be resolved by simply implementing QubitSparsePauliList.evolve
+                local_noise_terms = QubitSparsePauliList.from_sparse_list(
+                    [
+                        tuple(parts)
+                        # FIXME: we convert temporarily to SparsePauliOp to leverage its to_sparse_list
+                        for *parts, _ in SparsePauliOp(
+                            # FIXME: we convert temporarily to PauliList to leverage its evolve
+                            local_noise_terms.to_pauli_list().evolve(net_clifford, frame="s")
+                        ).to_sparse_list()
+                    ],
+                    circuit.num_qubits,
+                )
 
             norm_fn = partial(  # type: ignore[call-arg]
                 norm_fn,

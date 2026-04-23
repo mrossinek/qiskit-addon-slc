@@ -106,18 +106,17 @@ def time_evolved_norm_forward(
         orig = pauli
         pauli = SparsePauliOp(pauli)
 
-        span.add_event("pauli_propagation_started")
-        pauli, trunc_onenorm = propagate_through_rotation_gates(
-            operator=pauli,
-            rot_gates=gates,
-            max_terms=evolution_max_terms,
-            atol=slc_globals.ZERO_ATOL,
-            frame="s",
-        )
-        trunc_bias = float(2 * trunc_onenorm)
-        span.add_event("pauli_propagation_completed")
-        span.set_attribute("truncation.one_norm", float(trunc_onenorm))
+        with traced_span("pauli_prop") as inner_span:
+            pauli, trunc_onenorm = propagate_through_rotation_gates(
+                operator=pauli,
+                rot_gates=gates,
+                max_terms=evolution_max_terms,
+                atol=slc_globals.ZERO_ATOL,
+                frame="s",
+            )
+            inner_span.set_attribute("pauli_prop.one_norm", float(trunc_onenorm))
 
+        trunc_bias = float(2 * trunc_onenorm)
         if trunc_bias >= 2.0:
             result = CommutatorBounds(float("NaN"), trunc_bias, False)
             span.add_event("computation_aborted", {"reason": "truncation_bias_exceeds_bound"})
@@ -138,31 +137,32 @@ def time_evolved_norm_forward(
             span.set_attribute("result.fallback_to_tri_ineq", result.fallback_to_tri_ineq)
             return result
 
-        span.add_event("commutator_computation_started")
-        # NOTE: we must use .dot for the second operation because we need the implementation of
-        # `SparsePauliOp.dot(Pauli)` since `Pauli.compose(SparsePauliOp)` is not implemented
-        commutator = pauli.compose(observable) - pauli.dot(observable)
-        # NOTE: since pauli and observable are both hermitian, we know that their commutator is
-        # anti-hermitian. Therefore, multiplying it by 1j below we can make it hermitian again (without
-        # changing its norm). This guarantees the imaginary phase of all coefficients to be zero (but
-        # asserting this will work only after a call to simplify(atol=0) to de-duplicate terms and
-        # ensure coefficients cancel correctly).
-        commutator *= -1j
-        # NOTE: even though we do not call simplify (yet) we force all imaginary phases to be exactly 0
-        # to avoid numerical noise.
-        commutator.coeffs.imag = 0
+        with traced_span("commutator") as inner_span:
+            # NOTE: we must use .dot for the second operation because we need the implementation of
+            # `SparsePauliOp.dot(Pauli)` since `Pauli.compose(SparsePauliOp)` is not implemented
+            commutator = pauli.compose(observable) - pauli.dot(observable)
+            # NOTE: since pauli and observable are both hermitian, we know that their commutator is
+            # anti-hermitian. Therefore, multiplying it by 1j below we can make it hermitian again (without
+            # changing its norm). This guarantees the imaginary phase of all coefficients to be zero (but
+            # asserting this will work only after a call to simplify(atol=0) to de-duplicate terms and
+            # ensure coefficients cancel correctly).
+            commutator *= -1j
+            # NOTE: even though we do not call simplify (yet) we force all imaginary phases to be exactly 0
+            # to avoid numerical noise.
+            commutator.coeffs.imag = 0
 
-        # compute 1-norm before simplifying to atol
-        commutator = commutator.simplify(atol=0)
-        one_norm_before = np.linalg.norm(commutator.coeffs, ord=1)
-        # compute 1-norm after simplifying to atol
-        commutator = commutator.simplify(atol=atol_simplify)
-        one_norm_after = np.linalg.norm(commutator.coeffs, ord=1)
-        # compute loss in 1-norm due to simplifying to atol
-        one_norm_loss = one_norm_before - one_norm_after
-        one_norm_loss = max(one_norm_loss, np.float64(0.0))
+            # compute 1-norm before simplifying to atol
+            commutator = commutator.simplify(atol=0)
+            one_norm_before = np.linalg.norm(commutator.coeffs, ord=1)
+            # compute 1-norm after simplifying to atol
+            commutator = commutator.simplify(atol=atol_simplify)
+            one_norm_after = np.linalg.norm(commutator.coeffs, ord=1)
+            # compute loss in 1-norm due to simplifying to atol
+            one_norm_loss = one_norm_before - one_norm_after
+            one_norm_loss = max(one_norm_loss, np.float64(0.0))
+            inner_span.set_attribute("commutator.one_norm_loss", float(one_norm_loss))
+
         trunc_bias += float(one_norm_loss)
-        span.add_event("commutator_computation_completed")
 
         if trunc_bias >= 2.0:
             span.add_event("computation_aborted", {"reason": "truncation_bias_exceeds_bound"})
@@ -224,25 +224,25 @@ def time_evolved_norm_forward(
             return fallback_to_tri_ineq(commutator.coeffs, trunc_bias)
 
         # When the number of qubits is sufficiently small, compute the smallest eigenvalue directly
-        span.add_event("eigenvalue_computation_started")
         if commutator.num_qubits <= 4:
-            span.add_event("direct_eigenvalue_computation", {"num_qubits": commutator.num_qubits})
-            commutator = commutator.to_matrix()
-            comm_norm = np.abs(
-                scipy.linalg.eigvalsh(
-                    commutator,
-                    subset_by_index=(
-                        commutator.shape[0] - 1,
-                        commutator.shape[0] - 1,
-                    ),
-                )[0]
-            )
-            success = True
+            with traced_span("direct_eigenvalue_computation") as inner_span:
+                inner_span.set_attribute("num_qubits", commutator.num_qubits)
+                commutator = commutator.to_matrix()
+                comm_norm = np.abs(
+                    scipy.linalg.eigvalsh(
+                        commutator,
+                        subset_by_index=(
+                            commutator.shape[0] - 1,
+                            commutator.shape[0] - 1,
+                        ),
+                    )[0]
+                )
+                success = True
 
         else:
-            span.add_event("davidson_eigensolver", {"num_qubits": commutator.num_qubits})
-            success, comm_norm = get_extremal_eigenvalue(commutator, tol=atol_eigenvalue)
-        span.add_event("eigenvalue_computation_completed")
+            with traced_span("davidson_eigensolver") as inner_span:
+                inner_span.set_attribute("num_qubits", commutator.num_qubits)
+                success, comm_norm = get_extremal_eigenvalue(commutator, tol=atol_eigenvalue)
 
         if success:
             comm_norm = np.abs(comm_norm)
@@ -351,9 +351,8 @@ def compute_forward_bounds(
             "observable.num_qubits": pauli.num_qubits,
         },
     ) as span:
-        span.add_event("circuit_preparation_started")
+        span.add_event("circuit_preparation")
         circuit = remove_measure(circuit)
-        span.add_event("circuit_preparation_completed")
 
         if (
             not np.isclose(atol, 1e-8, atol=1e-9)
@@ -378,7 +377,7 @@ def compute_forward_bounds(
         span.add_event("light_cone_initialization")
         lc = LightCone.initialize_from_pauli(circuit, pauli)
 
-        span.add_event("bounds_computation_started")
+        span.add_event("bounds_computation")
         comm_norms = compute_bounds(
             circuit,
             noise_model_paulis,
@@ -388,6 +387,5 @@ def compute_forward_bounds(
             parent_span=span,
             **kwargs,
         )
-        span.add_event("bounds_computation_completed")
 
         return comm_norms
