@@ -40,7 +40,12 @@ from qiskit.utils import deprecate_arg
 
 from .. import globals as slc_globals
 from ..utils import get_extremal_eigenvalue, remove_measure
-from ..utils.tracing import attach_context, detach_context, extract_trace_context, get_tracer
+from ..utils.tracing import (
+    attach_context,
+    detach_context,
+    extract_trace_context,
+    is_tracing_enabled,
+)
 from .commutator_bounds import Bounds, CommutatorBounds, compute_bounds
 from .light_cone import LightCone
 
@@ -92,7 +97,25 @@ def time_evolved_norm_forward(
     Returns:
         The unequal-time commutator bound.
     """
-    tracer = get_tracer(__name__)
+    # Branch based on whether tracing is enabled
+    if not is_tracing_enabled():
+        # Call implementation directly without tracing
+        return _compute_forward_norm(
+            pauli,
+            gates,
+            observable,
+            evolution_max_terms,
+            eigval_max_qubits,
+            comm_norm_order,
+            atol_simplify,
+            atol_eigenvalue,
+            span=None,
+        )
+
+    # Tracing is enabled, wrap in span
+    from opentelemetry import trace
+
+    tracer = trace.get_tracer(__name__)
 
     # Extract and attach trace context if provided
     ctx = extract_trace_context(trace_context)
@@ -136,9 +159,9 @@ def _compute_forward_norm(
     comm_norm_order: int,
     atol_simplify: float,
     atol_eigenvalue: float,
-    span: Any,
+    span: Any | None,
 ) -> CommutatorBounds:
-    """Internal implementation of forward norm computation with span tracking."""
+    """Internal implementation of forward norm computation with optional span tracking."""
     # Convert the single Pauli to a SparsePauliOp which we can then evolve
     orig = pauli
     pauli = SparsePauliOp(pauli)
@@ -151,28 +174,33 @@ def _compute_forward_norm(
     )
     trunc_bias = 2 * trunc_onenorm
 
-    span.set_attribute("truncation.one_norm", float(trunc_onenorm))
-    span.set_attribute("truncation.bias", float(trunc_bias))
+    if span is not None:
+        span.set_attribute("truncation.one_norm", float(trunc_onenorm))
+        span.set_attribute("truncation.bias", float(trunc_bias))
 
     if trunc_bias >= 2.0:
-        span.add_event("computation_aborted", {"reason": "truncation_bias_exceeds_bound"})
+        if span is not None:
+            span.add_event("computation_aborted", {"reason": "truncation_bias_exceeds_bound"})
         result = CommutatorBounds(float("NaN"), trunc_bias, False)
-        span.set_attribute("result.commutator_bound", "NaN")
-        span.set_attribute("result.truncation_bias", result.truncation_bias)
-        span.set_attribute("result.fallback_to_tri_ineq", result.fallback_to_tri_ineq)
+        if span is not None:
+            span.set_attribute("result.commutator_bound", "NaN")
+            span.set_attribute("result.truncation_bias", result.truncation_bias)
+            span.set_attribute("result.fallback_to_tri_ineq", result.fallback_to_tri_ineq)
         return result
 
     # Handle case of a single-Pauli:
     # Ignore limit on num qubits since don't need to go to computational basis.
     # Efficiently handles Clifford case.
     if len(pauli.paulis) == 1:
-        span.add_event("single_pauli_optimization")
+        if span is not None:
+            span.add_event("single_pauli_optimization")
         comm_norm = 2 * np.abs(pauli.coeffs[0]) * (pauli.paulis[0].anticommutes(observable))
         result = CommutatorBounds(comm_norm, trunc_bias, False)
-        span.set_attribute("result.commutator_bound", result.commutator_bound)
-        span.set_attribute("result.truncation_bias", result.truncation_bias)
-        span.set_attribute("result.fallback_to_tri_ineq", result.fallback_to_tri_ineq)
-        span.set_attribute("result.min_bound", result.min())
+        if span is not None:
+            span.set_attribute("result.commutator_bound", result.commutator_bound)
+            span.set_attribute("result.truncation_bias", result.truncation_bias)
+            span.set_attribute("result.fallback_to_tri_ineq", result.fallback_to_tri_ineq)
+            span.set_attribute("result.min_bound", result.min())
         return result
 
     # NOTE: we must use .dot for the second operation because we need the implementation of
@@ -206,12 +234,14 @@ def _compute_forward_norm(
     if np.logical_not(np.any((commutator.paulis.x, commutator.paulis.z))) and np.isclose(
         np.sum(commutator.coeffs), 0
     ):
-        span.add_event("zero_commutator")
+        if span is not None:
+            span.add_event("zero_commutator")
         result = CommutatorBounds(0.0, trunc_bias, False)
-        span.set_attribute("result.commutator_bound", result.commutator_bound)
-        span.set_attribute("result.truncation_bias", result.truncation_bias)
-        span.set_attribute("result.fallback_to_tri_ineq", result.fallback_to_tri_ineq)
-        span.set_attribute("result.min_bound", result.min())
+        if span is not None:
+            span.set_attribute("result.commutator_bound", result.commutator_bound)
+            span.set_attribute("result.truncation_bias", result.truncation_bias)
+            span.set_attribute("result.fallback_to_tri_ineq", result.fallback_to_tri_ineq)
+            span.set_attribute("result.min_bound", result.min())
         return result
 
     # If any qubits have only identity Paulis, remove those qubits.
@@ -229,36 +259,42 @@ def _compute_forward_norm(
 
     # Handle case where a comm_norm_order other than 2 was requested:
     if comm_norm_order != 2:
-        span.add_event("non_standard_norm_order", {"order": comm_norm_order})
+        if span is not None:
+            span.add_event("non_standard_norm_order", {"order": comm_norm_order})
         comm_norm = np.linalg.norm(commutator, ord=comm_norm_order)
         result = CommutatorBounds(float(comm_norm), trunc_bias, False)
-        span.set_attribute("result.commutator_bound", result.commutator_bound)
-        span.set_attribute("result.truncation_bias", result.truncation_bias)
-        span.set_attribute("result.fallback_to_tri_ineq", result.fallback_to_tri_ineq)
-        span.set_attribute("result.min_bound", result.min())
+        if span is not None:
+            span.set_attribute("result.commutator_bound", result.commutator_bound)
+            span.set_attribute("result.truncation_bias", result.truncation_bias)
+            span.set_attribute("result.fallback_to_tri_ineq", result.fallback_to_tri_ineq)
+            span.set_attribute("result.min_bound", result.min())
         return result
 
     def fallback_to_tri_ineq(coeffs, trunc_bias_) -> CommutatorBounds:
-        span.add_event("fallback_to_triangle_inequality")
+        if span is not None:
+            span.add_event("fallback_to_triangle_inequality")
         comm_norm_ = 2 * np.abs(coeffs).sum()
         result = CommutatorBounds(float(comm_norm_), trunc_bias_, True)
-        span.set_attribute("result.commutator_bound", result.commutator_bound)
-        span.set_attribute("result.truncation_bias", result.truncation_bias)
-        span.set_attribute("result.fallback_to_tri_ineq", result.fallback_to_tri_ineq)
-        span.set_attribute("result.min_bound", result.min())
+        if span is not None:
+            span.set_attribute("result.commutator_bound", result.commutator_bound)
+            span.set_attribute("result.truncation_bias", result.truncation_bias)
+            span.set_attribute("result.fallback_to_tri_ineq", result.fallback_to_tri_ineq)
+            span.set_attribute("result.min_bound", result.min())
         return result
 
     # When the number of qubits is too large, fall back
     if commutator.num_qubits > eigval_max_qubits:
-        span.add_event(
-            "qubit_limit_exceeded",
-            {"num_qubits": commutator.num_qubits, "max_qubits": eigval_max_qubits},
-        )
+        if span is not None:
+            span.add_event(
+                "qubit_limit_exceeded",
+                {"num_qubits": commutator.num_qubits, "max_qubits": eigval_max_qubits},
+            )
         return fallback_to_tri_ineq(commutator.coeffs, trunc_bias)
 
     # When the number of qubits is sufficiently small, compute the smallest eigenvalue directly
     if commutator.num_qubits <= 4:
-        span.add_event("direct_eigenvalue_computation", {"num_qubits": commutator.num_qubits})
+        if span is not None:
+            span.add_event("direct_eigenvalue_computation", {"num_qubits": commutator.num_qubits})
         commutator = commutator.to_matrix()
         comm_norm = np.abs(
             scipy.linalg.eigvalsh(
@@ -272,13 +308,15 @@ def _compute_forward_norm(
         success = True
 
     else:
-        span.add_event("davidson_eigensolver", {"num_qubits": commutator.num_qubits})
+        if span is not None:
+            span.add_event("davidson_eigensolver", {"num_qubits": commutator.num_qubits})
         success, comm_norm = get_extremal_eigenvalue(commutator, tol=atol_eigenvalue)
 
     if success:
         comm_norm = np.abs(comm_norm)
         if comm_norm - 2.0 > WARNING_TOL:
-            span.add_event("warning_comm_norm_exceeds_bound", {"comm_norm": float(comm_norm)})
+            if span is not None:
+                span.add_event("warning_comm_norm_exceeds_bound", {"comm_norm": float(comm_norm)})
             LOGGER.debug(
                 f"Solver found comm norm {comm_norm:.6f} > {2.0 + WARNING_TOL} for Pauli error "
                 f"{orig!s}."
@@ -286,17 +324,19 @@ def _compute_forward_norm(
     else:
         # If this failure is common, could sort SPO by |coeffs|, break into chunks, and call
         # Davidson on each chunk.
-        span.add_event("eigensolver_failed")
+        if span is not None:
+            span.add_event("eigensolver_failed")
         LOGGER.debug("Eigensolver failed, reverting to triangle inequality...")
         return fallback_to_tri_ineq(commutator.coeffs, trunc_bias)
 
     result = CommutatorBounds(comm_norm, trunc_bias, False)
 
     # Add final result attributes to span
-    span.set_attribute("result.commutator_bound", result.commutator_bound)
-    span.set_attribute("result.truncation_bias", result.truncation_bias)
-    span.set_attribute("result.fallback_to_tri_ineq", result.fallback_to_tri_ineq)
-    span.set_attribute("result.min_bound", result.min())
+    if span is not None:
+        span.set_attribute("result.commutator_bound", result.commutator_bound)
+        span.set_attribute("result.truncation_bias", result.truncation_bias)
+        span.set_attribute("result.fallback_to_tri_ineq", result.fallback_to_tri_ineq)
+        span.set_attribute("result.min_bound", result.min())
 
     return result
 
@@ -378,7 +418,50 @@ def compute_forward_bounds(
     LOGGER.info("Evolving Pauli error terms forwards through the circuit.")
     LOGGER.info("Modelling errors as though they happen *after* each noise layer.")
 
-    tracer = get_tracer(__name__)
+    # Branch based on whether tracing is enabled
+    if not is_tracing_enabled():
+        return _compute_forward_bounds_impl(
+            circuit,
+            noise_model_paulis,
+            pauli,
+            evolution_max_terms,
+            eigval_max_qubits,
+            atol,
+            atol_simplify,
+            atol_eigenvalue,
+            parent_span=None,
+            **kwargs,
+        )
+
+    # Tracing is enabled, wrap in span
+    return _compute_forward_bounds_with_tracing(
+        circuit,
+        noise_model_paulis,
+        pauli,
+        evolution_max_terms,
+        eigval_max_qubits,
+        atol,
+        atol_simplify,
+        atol_eigenvalue,
+        **kwargs,
+    )
+
+
+def _compute_forward_bounds_with_tracing(
+    circuit: QuantumCircuit,
+    noise_model_paulis: dict[str, QubitSparsePauliList],
+    pauli: Pauli,
+    evolution_max_terms: int,
+    eigval_max_qubits: int,
+    atol: float,
+    atol_simplify: float,
+    atol_eigenvalue: float,
+    **kwargs,
+) -> Bounds:
+    """Internal function that wraps forward bounds computation with tracing."""
+    from opentelemetry import trace
+
+    tracer = trace.get_tracer(__name__)
 
     with tracer.start_as_current_span(
         "compute_forward_bounds",
@@ -392,48 +475,81 @@ def compute_forward_bounds(
             "atol_eigenvalue": atol_eigenvalue,
         },
     ) as parent_span:
-        # Circuit preparation
-        parent_span.add_event("circuit_preparation_started")
-        circuit = remove_measure(circuit)
-        parent_span.add_event("circuit_preparation_completed")
-
-        if (
-            not np.isclose(atol, 1e-8, atol=1e-9)
-            and np.isclose(atol_simplify, 1e-8, atol=1e-9)
-            and np.isclose(atol_eigenvalue, 1e-8, atol=1e-9)
-        ):
-            # the user specified the deprecated `atol` argument but neither of the other two new
-            # replacement arguments
-            atol_simplify = atol  # pragma: no cover
-            atol_eigenvalue = atol  # pragma: no cover
-
-        # Create norm function
-        parent_span.add_event("norm_function_created")
-        norm_fn = partial(
-            time_evolved_norm_forward,
-            observable=pauli,
-            evolution_max_terms=evolution_max_terms,
-            eigval_max_qubits=eigval_max_qubits,
-            comm_norm_order=2,
-            atol_simplify=atol_simplify,
-            atol_eigenvalue=atol_eigenvalue,
-        )
-
-        # Initialize light cone
-        parent_span.add_event("light_cone_initialization")
-        lc = LightCone.initialize_from_pauli(circuit, pauli)
-
-        # Compute bounds
-        parent_span.add_event("bounds_computation_started")
-        comm_norms = compute_bounds(
+        return _compute_forward_bounds_impl(
             circuit,
             noise_model_paulis,
-            lc,
-            norm_fn,
-            backwards=False,
+            pauli,
+            evolution_max_terms,
+            eigval_max_qubits,
+            atol,
+            atol_simplify,
+            atol_eigenvalue,
             parent_span=parent_span,
             **kwargs,
         )
+
+
+def _compute_forward_bounds_impl(
+    circuit: QuantumCircuit,
+    noise_model_paulis: dict[str, QubitSparsePauliList],
+    pauli: Pauli,
+    evolution_max_terms: int,
+    eigval_max_qubits: int,
+    atol: float,
+    atol_simplify: float,
+    atol_eigenvalue: float,
+    parent_span: Any | None,
+    **kwargs,
+) -> Bounds:
+    """Internal implementation of forward bounds computation."""
+    # Circuit preparation
+    if parent_span is not None:
+        parent_span.add_event("circuit_preparation_started")
+    circuit = remove_measure(circuit)
+    if parent_span is not None:
+        parent_span.add_event("circuit_preparation_completed")
+
+    if (
+        not np.isclose(atol, 1e-8, atol=1e-9)
+        and np.isclose(atol_simplify, 1e-8, atol=1e-9)
+        and np.isclose(atol_eigenvalue, 1e-8, atol=1e-9)
+    ):
+        # the user specified the deprecated `atol` argument but neither of the other two new
+        # replacement arguments
+        atol_simplify = atol  # pragma: no cover
+        atol_eigenvalue = atol  # pragma: no cover
+
+    # Create norm function
+    if parent_span is not None:
+        parent_span.add_event("norm_function_created")
+    norm_fn = partial(
+        time_evolved_norm_forward,
+        observable=pauli,
+        evolution_max_terms=evolution_max_terms,
+        eigval_max_qubits=eigval_max_qubits,
+        comm_norm_order=2,
+        atol_simplify=atol_simplify,
+        atol_eigenvalue=atol_eigenvalue,
+    )
+
+    # Initialize light cone
+    if parent_span is not None:
+        parent_span.add_event("light_cone_initialization")
+    lc = LightCone.initialize_from_pauli(circuit, pauli)
+
+    # Compute bounds
+    if parent_span is not None:
+        parent_span.add_event("bounds_computation_started")
+    comm_norms = compute_bounds(
+        circuit,
+        noise_model_paulis,
+        lc,
+        norm_fn,
+        backwards=False,
+        parent_span=parent_span,
+        **kwargs,
+    )
+    if parent_span is not None:
         parent_span.add_event("bounds_computation_completed")
 
-        return comm_norms
+    return comm_norms

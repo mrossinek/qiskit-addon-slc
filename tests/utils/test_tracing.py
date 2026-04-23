@@ -16,6 +16,7 @@ import os
 import unittest
 from unittest.mock import MagicMock, patch
 
+from qiskit_addon_slc.optionals import HAS_OPENTELEMETRY
 from qiskit_addon_slc.utils.tracing import (
     attach_context,
     detach_context,
@@ -54,6 +55,7 @@ class TestTracingUtilities(unittest.TestCase):
             del os.environ["QISKIT_SLC_TRACING_ENABLED"]
         self.assertFalse(is_tracing_enabled())
 
+    @unittest.skipIf(not HAS_OPENTELEMETRY, "OpenTelemetry not installed")
     def test_is_tracing_enabled_true(self):
         """Test that tracing can be enabled via environment variable."""
         os.environ["QISKIT_SLC_TRACING_ENABLED"] = "true"
@@ -64,6 +66,7 @@ class TestTracingUtilities(unittest.TestCase):
         os.environ["QISKIT_SLC_TRACING_ENABLED"] = "false"
         self.assertFalse(is_tracing_enabled())
 
+    @unittest.skipIf(not HAS_OPENTELEMETRY, "OpenTelemetry not installed")
     def test_is_tracing_enabled_case_insensitive(self):
         """Test that environment variable is case-insensitive."""
         os.environ["QISKIT_SLC_TRACING_ENABLED"] = "TRUE"
@@ -72,13 +75,24 @@ class TestTracingUtilities(unittest.TestCase):
         os.environ["QISKIT_SLC_TRACING_ENABLED"] = "False"
         self.assertFalse(is_tracing_enabled())
 
+    def test_get_tracer_returns_none_when_disabled(self):
+        """Test that get_tracer returns None when tracing is disabled."""
+        os.environ["QISKIT_SLC_TRACING_ENABLED"] = "false"
+        tracer = get_tracer("test_module")
+        if not HAS_OPENTELEMETRY:
+            self.assertIsNone(tracer)
+
+    @unittest.skipIf(not HAS_OPENTELEMETRY, "OpenTelemetry not installed")
     def test_get_tracer_returns_tracer(self):
-        """Test that get_tracer returns a tracer instance."""
+        """Test that get_tracer returns a tracer instance when enabled."""
+        os.environ["QISKIT_SLC_TRACING_ENABLED"] = "true"
         tracer = get_tracer("test_module")
         self.assertIsNotNone(tracer)
 
+    @unittest.skipIf(not HAS_OPENTELEMETRY, "OpenTelemetry not installed")
     def test_get_tracer_with_custom_name(self):
         """Test that get_tracer accepts custom names."""
+        os.environ["QISKIT_SLC_TRACING_ENABLED"] = "true"
         tracer = get_tracer("custom_name")
         self.assertIsNotNone(tracer)
 
@@ -110,6 +124,7 @@ class TestTracingUtilities(unittest.TestCase):
         # Should not raise an exception
         detach_context(None)
 
+    @unittest.skipIf(not HAS_OPENTELEMETRY, "OpenTelemetry not installed")
     @patch("qiskit_addon_slc.utils.tracing.is_tracing_enabled", return_value=True)
     @patch("opentelemetry.propagate.inject")
     def test_inject_trace_context_when_enabled(self, mock_inject, _mock_is_enabled):
@@ -126,6 +141,7 @@ class TestTracingUtilities(unittest.TestCase):
         self.assertIsInstance(carrier, dict)
         self.assertIn("traceparent", carrier)
 
+    @unittest.skipIf(not HAS_OPENTELEMETRY, "OpenTelemetry not installed")
     @patch("qiskit_addon_slc.utils.tracing.is_tracing_enabled", return_value=True)
     @patch("opentelemetry.propagate.extract")
     def test_extract_trace_context_when_enabled(self, mock_extract, _mock_is_enabled):
@@ -137,7 +153,9 @@ class TestTracingUtilities(unittest.TestCase):
         mock_extract.assert_called_once_with(carrier)
         self.assertEqual(ctx, mock_context)
 
-    @patch("qiskit_addon_slc.utils.tracing.context.attach")
+    @unittest.skipIf(not HAS_OPENTELEMETRY, "OpenTelemetry not installed")
+    @patch("qiskit_addon_slc.utils.tracing.HAS_OPENTELEMETRY", True)
+    @patch("opentelemetry.context.attach")
     def test_attach_context_with_valid_context(self, mock_attach):
         """Test that attach_context calls context.attach with valid context."""
         mock_context = MagicMock()
@@ -149,7 +167,9 @@ class TestTracingUtilities(unittest.TestCase):
         mock_attach.assert_called_once_with(mock_context)
         self.assertEqual(token, mock_token)
 
-    @patch("qiskit_addon_slc.utils.tracing.context.detach")
+    @unittest.skipIf(not HAS_OPENTELEMETRY, "OpenTelemetry not installed")
+    @patch("qiskit_addon_slc.utils.tracing.HAS_OPENTELEMETRY", True)
+    @patch("opentelemetry.context.detach")
     def test_detach_context_with_valid_token(self, mock_detach):
         """Test that detach_context calls context.detach with valid token."""
         mock_token = MagicMock()
@@ -158,6 +178,7 @@ class TestTracingUtilities(unittest.TestCase):
 
         mock_detach.assert_called_once_with(mock_token)
 
+    @unittest.skipIf(not HAS_OPENTELEMETRY, "OpenTelemetry not installed")
     def test_context_propagation_round_trip(self):
         """Test that context can be injected and extracted in a round trip."""
         os.environ["QISKIT_SLC_TRACING_ENABLED"] = "true"

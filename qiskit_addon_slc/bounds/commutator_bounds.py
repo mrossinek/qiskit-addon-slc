@@ -26,7 +26,6 @@ from functools import partial
 from typing import Any, NamedTuple
 
 import numpy as np
-from opentelemetry import trace
 from pauli_prop.propagation import (
     KNOWN_CLIFFS,
     RotationGates,
@@ -44,7 +43,6 @@ from qiskit.quantum_info import (
 from .. import globals as slc_globals
 from ..utils import find_indices, iter_circuit
 from ..utils.tracing import (
-    get_tracer,
     inject_trace_context,
     is_tracing_enabled,
 )
@@ -138,7 +136,51 @@ def compute_bounds(
     """
     LOGGER.debug(f"Using {num_processes} processes")
 
-    tracer = get_tracer(__name__)
+    # Branch based on whether tracing is enabled
+    if not is_tracing_enabled():
+        # Call implementation directly without tracing
+        return _compute_bounds_impl(
+            circuit,
+            noise_model_paulis,
+            light_cone,
+            norm_fn,
+            backwards=backwards,
+            max_num_boxes=max_num_boxes,
+            num_processes=num_processes,
+            timeout=timeout,
+            parent_span=None,
+        )
+
+    # Tracing is enabled, wrap in span
+    return _compute_bounds_with_tracing(
+        circuit,
+        noise_model_paulis,
+        light_cone,
+        norm_fn,
+        backwards=backwards,
+        max_num_boxes=max_num_boxes,
+        num_processes=num_processes,
+        timeout=timeout,
+        parent_span=parent_span,
+    )
+
+
+def _compute_bounds_with_tracing(
+    circuit: QuantumCircuit,
+    noise_model_paulis: dict[str, QubitSparsePauliList],
+    light_cone: LightCone,
+    norm_fn: Callable[[Pauli, RotationGates], CommutatorBounds],
+    *,
+    backwards: bool,
+    max_num_boxes: int | None,
+    num_processes: int,
+    timeout: float | None,
+    parent_span: Any | None,
+) -> Bounds:
+    """Internal function that wraps bounds computation with tracing."""
+    from opentelemetry import trace
+
+    tracer = trace.get_tracer(__name__)
 
     # Create child span if parent_span is provided, otherwise create root span
     span_attributes = {
@@ -300,7 +342,7 @@ def _compute_bounds_impl(
     LOGGER.debug(f"Total number of spawned tasks: {total_num_tasks}")
 
     # Add span event for task spawning completion
-    if is_tracing_enabled():
+    if parent_span is not None:
         parent_span.add_event(
             "tasks_spawned",
             {"total_tasks": total_num_tasks, "encountered_boxes": encountered_num_boxes},
@@ -321,7 +363,7 @@ def _compute_bounds_impl(
                 f"[{completed}/{total_num_tasks}] {perc:.1f}%"
             )
             # Add span event for progress tracking
-            if is_tracing_enabled():
+            if parent_span is not None:
                 parent_span.add_event(
                     "progress_update",
                     {"completed": completed, "total": total_num_tasks, "percentage": perc},
@@ -343,7 +385,7 @@ def _compute_bounds_impl(
     pool.join()
 
     # Add span event for computation completion
-    if is_tracing_enabled():
+    if parent_span is not None:
         parent_span.add_event(
             "computation_completed",
             {"completed_tasks": completed, "total_tasks": total_num_tasks},

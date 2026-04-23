@@ -25,13 +25,11 @@ import logging
 import os
 from typing import Any
 
-from opentelemetry import context, trace
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
+from ..optionals import HAS_OPENTELEMETRY
 
 LOGGER = logging.getLogger(__name__)
 
-_tracer_provider: TracerProvider | None = None
+_tracer_provider: Any = None
 _is_initialized: bool = False
 
 
@@ -39,8 +37,11 @@ def is_tracing_enabled() -> bool:
     """Check if tracing is enabled via environment variable.
 
     Returns:
-        True if tracing is enabled, False otherwise.
+        True if tracing is enabled and OpenTelemetry is available, False otherwise.
     """
+    if not HAS_OPENTELEMETRY:
+        return False
+
     return os.getenv("QISKIT_SLC_TRACING_ENABLED", "false").lower() == "true"
 
 
@@ -55,13 +56,16 @@ def _initialize_tracing() -> None:
     if _is_initialized:
         return
 
-    if not is_tracing_enabled():
+    if not HAS_OPENTELEMETRY or not is_tracing_enabled():
         _is_initialized = True
         return
 
     try:
+        from opentelemetry import trace
         from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
         from opentelemetry.sdk.resources import SERVICE_NAME, Resource
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
 
         # Create resource with service name
         service_name = os.getenv("OTEL_SERVICE_NAME", "qiskit-addon-slc")
@@ -106,6 +110,10 @@ def _initialize_tracing() -> None:
             "Falling back to console exporter."
         )
         # Fall back to console exporter
+        from opentelemetry import trace
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
+
         _tracer_provider = TracerProvider()
         _tracer_provider.add_span_processor(BatchSpanProcessor(ConsoleSpanExporter()))
         trace.set_tracer_provider(_tracer_provider)
@@ -115,17 +123,23 @@ def _initialize_tracing() -> None:
         _is_initialized = True
 
 
-def get_tracer(name: str = "qiskit_addon_slc") -> trace.Tracer:
+def get_tracer(name: str = "qiskit_addon_slc") -> Any:
     """Get or create a tracer instance.
 
     Args:
         name: The name of the tracer, typically the module name.
 
     Returns:
-        A Tracer instance. If tracing is disabled, returns a no-op tracer.
+        A Tracer instance if OpenTelemetry is available and tracing is enabled,
+        otherwise None.
     """
+    if not HAS_OPENTELEMETRY or not is_tracing_enabled():
+        return None
+
     if not _is_initialized:
         _initialize_tracing()
+
+    from opentelemetry import trace
 
     return trace.get_tracer(name)
 
@@ -138,9 +152,9 @@ def inject_trace_context() -> dict[str, str] | None:
 
     Returns:
         A dictionary containing the serialized trace context, or None if tracing
-        is disabled or no active context exists.
+        is disabled, OpenTelemetry is not available, or no active context exists.
     """
-    if not is_tracing_enabled():
+    if not HAS_OPENTELEMETRY or not is_tracing_enabled():
         return None
 
     try:
@@ -164,9 +178,10 @@ def extract_trace_context(carrier: dict[str, str] | None) -> Any:
         carrier: A dictionary containing serialized trace context, or None.
 
     Returns:
-        The extracted context, or None if carrier is None or extraction fails.
+        The extracted context, or None if carrier is None, OpenTelemetry is not
+        available, or extraction fails.
     """
-    if carrier is None or not is_tracing_enabled():
+    if carrier is None or not HAS_OPENTELEMETRY or not is_tracing_enabled():
         return None
 
     try:
@@ -185,12 +200,15 @@ def attach_context(ctx: Any) -> Any:
         ctx: The context to attach, typically obtained from extract_trace_context().
 
     Returns:
-        A token that can be used to detach the context later, or None if ctx is None.
+        A token that can be used to detach the context later, or None if ctx is None
+        or OpenTelemetry is not available.
     """
-    if ctx is None:
+    if ctx is None or not HAS_OPENTELEMETRY:
         return None
 
     try:
+        from opentelemetry import context
+
         return context.attach(ctx)
     except Exception as e:
         LOGGER.debug(f"Failed to attach context: {e}")
@@ -203,10 +221,12 @@ def detach_context(token: Any) -> None:
     Args:
         token: The token returned by attach_context().
     """
-    if token is None:
+    if token is None or not HAS_OPENTELEMETRY:
         return
 
     try:
+        from opentelemetry import context
+
         context.detach(token)
     except Exception as e:
         LOGGER.debug(f"Failed to detach context: {e}")
