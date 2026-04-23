@@ -434,31 +434,6 @@ def compute_forward_bounds(
         )
 
     # Tracing is enabled, wrap in span
-    return _compute_forward_bounds_with_tracing(
-        circuit,
-        noise_model_paulis,
-        pauli,
-        evolution_max_terms,
-        eigval_max_qubits,
-        atol,
-        atol_simplify,
-        atol_eigenvalue,
-        **kwargs,
-    )
-
-
-def _compute_forward_bounds_with_tracing(
-    circuit: QuantumCircuit,
-    noise_model_paulis: dict[str, QubitSparsePauliList],
-    pauli: Pauli,
-    evolution_max_terms: int,
-    eigval_max_qubits: int,
-    atol: float,
-    atol_simplify: float,
-    atol_eigenvalue: float,
-    **kwargs,
-) -> Bounds:
-    """Internal function that wraps forward bounds computation with tracing."""
     from opentelemetry import trace
 
     tracer = trace.get_tracer(__name__)

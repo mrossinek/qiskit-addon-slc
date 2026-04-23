@@ -218,21 +218,6 @@ def compute_backward_bounds(
         )
 
     # Tracing is enabled, wrap in span
-    return _compute_backward_bounds_with_tracing(
-        circuit,
-        noise_model_paulis,
-        evolution_max_terms,
-        **kwargs,
-    )
-
-
-def _compute_backward_bounds_with_tracing(
-    circuit: QuantumCircuit,
-    noise_model_paulis: dict[str, QubitSparsePauliList],
-    evolution_max_terms: int,
-    **kwargs,
-) -> Bounds:
-    """Internal function that wraps backward bounds computation with tracing."""
     from opentelemetry import trace
 
     tracer = trace.get_tracer(__name__)

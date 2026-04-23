@@ -152,32 +152,6 @@ def compute_bounds(
         )
 
     # Tracing is enabled, wrap in span
-    return _compute_bounds_with_tracing(
-        circuit,
-        noise_model_paulis,
-        light_cone,
-        norm_fn,
-        backwards=backwards,
-        max_num_boxes=max_num_boxes,
-        num_processes=num_processes,
-        timeout=timeout,
-        parent_span=parent_span,
-    )
-
-
-def _compute_bounds_with_tracing(
-    circuit: QuantumCircuit,
-    noise_model_paulis: dict[str, QubitSparsePauliList],
-    light_cone: LightCone,
-    norm_fn: Callable[[Pauli, RotationGates], CommutatorBounds],
-    *,
-    backwards: bool,
-    max_num_boxes: int | None,
-    num_processes: int,
-    timeout: float | None,
-    parent_span: Any | None,
-) -> Bounds:
-    """Internal function that wraps bounds computation with tracing."""
     from opentelemetry import trace
 
     tracer = trace.get_tracer(__name__)
