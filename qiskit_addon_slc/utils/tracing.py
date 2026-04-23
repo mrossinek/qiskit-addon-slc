@@ -21,8 +21,11 @@ configuration management.
 
 from __future__ import annotations
 
+import atexit
 import logging
 import os
+import signal
+import threading
 from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any
@@ -33,6 +36,13 @@ LOGGER = logging.getLogger(__name__)
 
 _tracer_provider: Any = None
 _is_initialized: bool = False
+
+# Process-local storage for worker span and metadata
+_worker_span_storage = threading.local()
+
+# Global counter for worker index assignment (approximate, not strictly sequential)
+_worker_counter = 0
+_worker_counter_lock = threading.Lock()
 
 
 class NoOpSpan:
@@ -404,3 +414,170 @@ def prepare_worker_context() -> dict[str, str] | None:
             )
     """
     return _inject_trace_context() if is_tracing_enabled() else None
+
+
+def initialize_worker(trace_context: dict[str, str] | None = None) -> None:
+    """Initialize worker process with its own parent span.
+
+    This function should be called once per worker process when it starts (typically
+    via mp.Pool's initializer parameter). It creates a long-lived parent span for the
+    worker that will contain all task spans executed by this worker.
+
+    Args:
+        trace_context: Serialized trace context from main process to link worker span
+            to the main computation trace.
+
+    Example:
+        In main process::
+
+            trace_context = prepare_worker_context()
+            pool = mp.Pool(
+                num_processes,
+                initializer=initialize_worker,
+                initargs=(trace_context,)
+            )
+    """
+    global _worker_counter
+
+    if not is_tracing_enabled():
+        return
+
+    # Assign worker index using global counter
+    with _worker_counter_lock:
+        worker_index = _worker_counter
+        _worker_counter += 1
+
+    # Get process ID
+    pid = os.getpid()
+
+    LOGGER.debug(f"Initializing worker {worker_index} (PID: {pid})")
+
+    # Extract parent context if provided
+    ctx = _extract_trace_context(trace_context) if trace_context else None
+    token = _attach_context(ctx) if ctx else None
+
+    # Create tracer for worker
+    tracer = get_tracer("qiskit_addon_slc.worker")
+
+    # Create long-lived span for this worker
+    try:
+        # Start span and make it the current span in this process
+        span = tracer.start_span(
+            f"worker_{worker_index}",
+            context=ctx,
+            attributes={
+                "worker.index": worker_index,
+                "worker.pid": pid,
+            },
+        )
+
+        # Make this span the current span in the worker process
+        # This ensures all child spans are properly linked
+        if HAS_OPENTELEMETRY:
+            try:
+                from opentelemetry import context as otel_context
+                from opentelemetry.trace import set_span_in_context
+
+                # Set worker span as current in this process
+                worker_ctx = set_span_in_context(span, ctx)
+                worker_token = otel_context.attach(worker_ctx)
+
+                # Store the token so we can detach it later
+                _worker_span_storage.worker_context_token = worker_token
+            except Exception as e:
+                LOGGER.debug(f"Failed to set worker span as current: {e}")
+
+        # Store in process-local storage
+        _worker_span_storage.span = span
+        _worker_span_storage.worker_index = worker_index
+        _worker_span_storage.pid = pid
+        _worker_span_storage.context_token = token
+
+        # Register cleanup function
+        def cleanup_worker_span() -> None:
+            """Clean up worker span when process terminates."""
+            # Detach worker context first
+            worker_ctx_token = getattr(_worker_span_storage, "worker_context_token", None)
+            if worker_ctx_token is not None and HAS_OPENTELEMETRY:
+                try:
+                    from opentelemetry import context as otel_context
+                    otel_context.detach(worker_ctx_token)
+                except Exception as e:
+                    LOGGER.debug(f"Failed to detach worker context: {e}")
+
+            # End worker span
+            worker_span = getattr(_worker_span_storage, "span", None)
+            if worker_span is not None:
+                LOGGER.debug(
+                    f"Ending worker span for worker {worker_index} (PID: {pid})"
+                )
+                worker_span.end()
+
+                # Force flush to ensure span is exported before process terminates
+                if HAS_OPENTELEMETRY and _tracer_provider is not None:
+                    try:
+                        # Force flush all pending spans
+                        _tracer_provider.force_flush(timeout_millis=5000)
+                        LOGGER.debug(f"Flushed spans for worker {worker_index}")
+                    except Exception as e:
+                        LOGGER.debug(f"Failed to flush tracer provider: {e}")
+
+            # Detach parent context if it was attached
+            ctx_token = getattr(_worker_span_storage, "context_token", None)
+            if ctx_token is not None:
+                _detach_context(ctx_token)
+
+        atexit.register(cleanup_worker_span)
+
+        # Register signal handler for SIGTERM to ensure spans are closed even on pool.terminate()
+        def sigterm_handler(signum: int, frame: Any) -> None:
+            """Handle SIGTERM by cleaning up spans before process terminates."""
+            LOGGER.debug(f"Worker {worker_index} (PID: {pid}) received SIGTERM, cleaning up spans")
+            cleanup_worker_span()
+            # Re-raise SIGTERM to allow normal termination
+            signal.signal(signal.SIGTERM, signal.SIG_DFL)
+            os.kill(os.getpid(), signal.SIGTERM)
+
+        signal.signal(signal.SIGTERM, sigterm_handler)
+
+        LOGGER.debug(f"Worker {worker_index} (PID: {pid}) initialized successfully")
+
+    except Exception as e:
+        LOGGER.warning(f"Failed to initialize worker span: {e}")
+        if token is not None:
+            _detach_context(token)
+
+
+def get_worker_span() -> Any | None:
+    """Get the current worker's parent span.
+
+    Returns:
+        The worker's parent span if available, None otherwise.
+
+    Example:
+        In worker function::
+
+            worker_span = get_worker_span()
+            with traced_span("task", parent_span=worker_span) as span:
+                do_work()
+    """
+    return getattr(_worker_span_storage, "span", None)
+
+
+def get_worker_info() -> dict[str, int]:
+    """Get worker metadata (index, PID).
+
+    Returns:
+        Dictionary with 'worker_index' and 'pid' keys. Returns -1 for both
+        if not in a worker process or worker not initialized.
+
+    Example:
+        In worker function::
+
+            info = get_worker_info()
+            print(f"Running in worker {info['worker_index']} (PID: {info['pid']})")
+    """
+    return {
+        "worker_index": getattr(_worker_span_storage, "worker_index", -1),
+        "pid": getattr(_worker_span_storage, "pid", -1),
+    }

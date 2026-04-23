@@ -35,7 +35,7 @@ from qiskit.quantum_info import (
 
 from .. import globals as slc_globals
 from ..utils import remove_measure
-from ..utils.tracing import traced_span
+from ..utils.tracing import get_worker_info, get_worker_span, traced_span
 from .commutator_bounds import Bounds, CommutatorBounds, compute_bounds
 from .light_cone import LightCone
 
@@ -79,14 +79,26 @@ def time_evolved_norm_backward(
     # Convert the single Pauli to a SparsePauliOp which we can then evolve
     pauli = SparsePauliOp(pauli)
 
+    # Get worker span and metadata (if running in worker process)
+    worker_span = get_worker_span()
+    worker_info = get_worker_info()
+
+    # Prepare span attributes with worker metadata
+    span_attributes = {
+        "pauli": str(pauli),
+        "pauli.num_qubits": pauli.num_qubits,
+        "gates.count": len(gates.gates),
+    }
+    
+    # Add worker metadata if available
+    if worker_info["worker_index"] >= 0:
+        span_attributes["worker.index"] = worker_info["worker_index"]
+        span_attributes["worker.pid"] = worker_info["pid"]
+
     with traced_span(
         "backward_norm_computation",
-        trace_context=trace_context,
-        attributes={
-            "pauli": str(pauli),
-            "pauli.num_qubits": pauli.num_qubits,
-            "gates.count": len(gates.gates),
-        },
+        parent_span=worker_span,
+        attributes=span_attributes,
     ) as span:
         with traced_span("pauli_prop") as inner_span:
             pauli, trunc_onenorm = propagate_through_rotation_gates(

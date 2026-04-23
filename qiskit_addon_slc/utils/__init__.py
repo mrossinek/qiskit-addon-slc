@@ -45,6 +45,7 @@ from .davidson import get_extremal_eigenvalue
 from .find_indices import find_indices
 from .noise_model_paulis import generate_noise_model_paulis
 from .remove_measure import remove_measure
+from .tracing import get_worker_info, get_worker_span, initialize_worker
 
 # NOTE: working around lack of BoxOp.inverse - see https://github.com/Qiskit/qiskit/issues/14473
 BoxOp.inverse = box_op_inverse
@@ -53,6 +54,9 @@ __all__ = [
     "find_indices",
     "generate_noise_model_paulis",
     "get_extremal_eigenvalue",
+    "get_worker_info",
+    "get_worker_span",
+    "initialize_worker",
     "iter_circuit",
     "map_modifier_ref_to_ref",
     "remove_measure",

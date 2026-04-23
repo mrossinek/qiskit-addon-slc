@@ -41,7 +41,8 @@ from qiskit.quantum_info import (
 )
 
 from .. import globals as slc_globals
-from ..utils import find_indices, iter_circuit
+from ..optionals import HAS_OPENTELEMETRY
+from ..utils import find_indices, initialize_worker, iter_circuit
 from ..utils.tracing import prepare_worker_context, traced_span
 from .light_cone import LightCone
 
@@ -143,6 +144,9 @@ def compute_bounds(
             "max_num_boxes": max_num_boxes if max_num_boxes is not None else -1,
         },
     ) as span:
+        # Prepare trace context for worker processes
+        trace_context = prepare_worker_context()
+
         net_clifford = Clifford.from_label("I" * circuit.num_qubits)
         rot_gates = RotationGates([], [], [])
 
@@ -195,7 +199,12 @@ def compute_bounds(
 
             gathered_bounds[box_id][0][rate_idx] = bound.min()
 
-        pool = mp.Pool(num_processes)
+        # Create pool with worker initialization
+        pool = mp.Pool(
+            num_processes,
+            initializer=initialize_worker,
+            initargs=(trace_context,),
+        )
         tasks = set()
 
         start = time.time()
@@ -299,13 +308,43 @@ def compute_bounds(
                 )
                 if timeout is not None and (time.time() - start) > timeout:
                     LOGGER.warning(f"Reached user-specified time out of {timeout} seconds!")
-                    pool.terminate()
+                    # Close pool to prevent new tasks, allowing workers to finish current tasks
+                    # and properly clean up their spans via atexit handlers
+                    pool.close()
+                    LOGGER.warning("Waiting for workers to finish current tasks and clean up spans...")
+                    # Give workers time to finish current tasks and flush spans (max 10 seconds)
+                    cleanup_start = time.time()
+                    cleanup_timeout = 10
+                    while time.time() - cleanup_start < cleanup_timeout:
+                        # Check if all remaining tasks are done
+                        if all(t.ready() for t in tasks):
+                            LOGGER.warning("All tasks completed, workers can clean up properly")
+                            break
+                        time.sleep(0.1)
+                    else:
+                        LOGGER.warning("Cleanup timeout reached, terminating workers")
+                        pool.terminate()
                     break
             else:
                 pool.close()
         except KeyboardInterrupt:
             LOGGER.warning("Caught KeyboardInterrupt! Terminating pending bound computations.")
-            pool.terminate()
+            # Close pool to prevent new tasks, allowing workers to finish current tasks
+            # and properly clean up their spans via atexit handlers
+            pool.close()
+            LOGGER.warning("Waiting for workers to finish current tasks and clean up spans...")
+            # Give workers time to finish current tasks and flush spans (max 5 seconds for interrupt)
+            cleanup_start = time.time()
+            cleanup_timeout = 5
+            while time.time() - cleanup_start < cleanup_timeout:
+                # Check if all remaining tasks are done
+                if all(t.ready() for t in tasks):
+                    LOGGER.warning("All tasks completed, workers can clean up properly")
+                    break
+                time.sleep(0.1)
+            else:
+                LOGGER.warning("Cleanup timeout reached, terminating workers")
+                pool.terminate()
 
         tasks = {t for t in tasks if not t.ready()}
         completed = total_num_tasks - len(tasks)
