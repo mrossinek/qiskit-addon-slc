@@ -93,7 +93,6 @@ def time_evolved_norm_forward(
     """
     with traced_span(
         "forward_norm_computation",
-        tracer_name=__name__,
         trace_context=trace_context,
         attributes={
             "pauli": str(pauli),
@@ -347,7 +346,6 @@ def compute_forward_bounds(
 
     with traced_span(
         "compute_forward_bounds",
-        tracer_name=__name__,
         attributes={
             "circuit.num_qubits": circuit.num_qubits,
             "observable.num_qubits": pauli.num_qubits,

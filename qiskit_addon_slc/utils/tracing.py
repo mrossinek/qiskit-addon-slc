@@ -313,7 +313,6 @@ def _detach_context(token: Any) -> None:
 def traced_span(
     name: str,
     *,
-    tracer_name: str | None = None,
     trace_context: dict[str, str] | None = None,
     parent_span: Any | None = None,
     attributes: dict[str, Any] | None = None,
@@ -328,7 +327,6 @@ def traced_span(
 
     Args:
         name: Name of the span.
-        tracer_name: Optional tracer name (defaults to calling module).
         trace_context: Optional serialized trace context from another process.
         parent_span: Optional parent span to create a child span under.
         attributes: Optional span attributes.
@@ -357,7 +355,7 @@ def traced_span(
         yield NoOpSpan()
         return
 
-    tracer = get_tracer(tracer_name or "qiskit_addon_slc")
+    tracer = get_tracer("qiskit_addon_slc")
 
     # Handle trace context from cross-process boundary
     ctx = None

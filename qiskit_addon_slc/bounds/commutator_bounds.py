@@ -135,7 +135,6 @@ def compute_bounds(
 
     with traced_span(
         "compute_bounds",
-        tracer_name=__name__,
         parent_span=parent_span,
         attributes={
             "circuit.num_qubits": circuit.num_qubits,

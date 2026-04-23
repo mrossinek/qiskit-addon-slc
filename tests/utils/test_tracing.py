@@ -233,15 +233,6 @@ def test_traced_span_with_attributes(clean_env):
 
 
 @pytest.mark.skipif(not HAS_OPENTELEMETRY, reason="OpenTelemetry not installed")
-def test_traced_span_with_custom_tracer_name(clean_env):
-    """Test that traced_span handles custom tracer_name."""
-    clean_env.setenv("QISKIT_SLC_TRACING_ENABLED", "true")
-
-    with traced_span("test_operation", tracer_name="custom_tracer") as span:
-        assert span is not None
-
-
-@pytest.mark.skipif(not HAS_OPENTELEMETRY, reason="OpenTelemetry not installed")
 def test_traced_span_exception_handling(clean_env):
     """Test that traced_span properly handles exceptions."""
     clean_env.setenv("QISKIT_SLC_TRACING_ENABLED", "true")

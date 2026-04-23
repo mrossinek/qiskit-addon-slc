@@ -81,7 +81,6 @@ def time_evolved_norm_backward(
 
     with traced_span(
         "backward_norm_computation",
-        tracer_name=__name__,
         trace_context=trace_context,
         attributes={
             "pauli": str(pauli),
@@ -172,7 +171,6 @@ def compute_backward_bounds(
 
     with traced_span(
         "compute_backward_bounds",
-        tracer_name=__name__,
         attributes={
             "circuit.num_qubits": circuit.num_qubits,
         },
