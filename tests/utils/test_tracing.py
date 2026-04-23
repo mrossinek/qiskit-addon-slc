@@ -20,6 +20,7 @@ from qiskit_addon_slc.optionals import HAS_OPENTELEMETRY
 from qiskit_addon_slc.utils.tracing import (
     NoOpSpan,
     NoOpTracer,
+    _get_current_worker_index,
     get_tracer,
     is_tracing_enabled,
     prepare_worker_context,
@@ -316,3 +317,21 @@ def test_prepare_worker_context_no_opentelemetry():
     with patch("qiskit_addon_slc.utils.tracing.HAS_OPENTELEMETRY", False):
         ctx = prepare_worker_context()
         assert ctx is None
+
+
+def test_get_current_worker_index_uses_process_identity():
+    """Test that worker index is derived from multiprocessing process identity."""
+    with patch("qiskit_addon_slc.utils.tracing.mp.current_process") as mock_current_process:
+        mock_current_process.return_value._identity = (3,)
+        mock_current_process.return_value.name = "ForkPoolWorker-3"
+
+        assert _get_current_worker_index() == 2
+
+
+def test_get_current_worker_index_falls_back_to_process_name():
+    """Test that worker index falls back to the worker name when identity is unavailable."""
+    with patch("qiskit_addon_slc.utils.tracing.mp.current_process") as mock_current_process:
+        mock_current_process.return_value._identity = ()
+        mock_current_process.return_value.name = "ForkPoolWorker-4"
+
+        assert _get_current_worker_index() == 3

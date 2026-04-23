@@ -23,7 +23,9 @@ from __future__ import annotations
 
 import atexit
 import logging
+import multiprocessing as mp
 import os
+import re
 import signal
 import threading
 from collections.abc import Generator
@@ -39,10 +41,6 @@ _is_initialized: bool = False
 
 # Process-local storage for worker span and metadata
 _worker_span_storage = threading.local()
-
-# Global counter for worker index assignment (approximate, not strictly sequential)
-_worker_counter = 0
-_worker_counter_lock = threading.Lock()
 
 
 class NoOpSpan:
@@ -416,6 +414,26 @@ def prepare_worker_context() -> dict[str, str] | None:
     return _inject_trace_context() if is_tracing_enabled() else None
 
 
+def _get_current_worker_index() -> int:
+    """Infer a stable worker index for the current multiprocessing worker process.
+
+    Returns:
+        A zero-based worker index when running in a multiprocessing pool worker,
+        otherwise ``0`` as a safe fallback.
+    """
+    current_process = mp.current_process()
+
+    identity = getattr(current_process, "_identity", ())
+    if identity:
+        return int(identity[0]) - 1
+
+    name_match = re.search(r"(\d+)$", current_process.name)
+    if name_match is not None:
+        return int(name_match.group(1)) - 1
+
+    return 0
+
+
 def initialize_worker(trace_context: dict[str, str] | None = None) -> None:
     """Initialize worker process with its own parent span.
 
@@ -437,15 +455,10 @@ def initialize_worker(trace_context: dict[str, str] | None = None) -> None:
                 initargs=(trace_context,)
             )
     """
-    global _worker_counter
-
     if not is_tracing_enabled():
         return
 
-    # Assign worker index using global counter
-    with _worker_counter_lock:
-        worker_index = _worker_counter
-        _worker_counter += 1
+    worker_index = _get_current_worker_index()
 
     # Get process ID
     pid = os.getpid()
