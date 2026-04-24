@@ -27,17 +27,24 @@ import multiprocessing as mp
 import os
 import re
 import signal
+import sys
 import threading
 from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any
 
+from ..globals import (
+    OTEL_SERVICE_NAME,
+    TRACER_FLUSH_TIMEOUT_MS,
+    WORKER_INDEX_NOT_INITIALIZED,
+)
 from ..optionals import HAS_OPENTELEMETRY
 
 LOGGER = logging.getLogger(__name__)
 
 _tracer_provider: Any = None
 _is_initialized: bool = False
+_init_lock = threading.Lock()
 
 # Process-local storage for worker span and metadata
 _worker_span_storage = threading.local()
@@ -155,7 +162,19 @@ def is_tracing_enabled() -> bool:
     if not HAS_OPENTELEMETRY:
         return False
 
-    return os.getenv("QISKIT_SLC_TRACING_ENABLED", "false").lower() == "true"
+    value = os.getenv("QISKIT_SLC_TRACING_ENABLED", "false").lower()
+    return value in ("true", "1", "yes", "on")
+
+
+def _shutdown_tracing() -> None:
+    """Shutdown tracer provider on exit."""
+    global _tracer_provider
+    if _tracer_provider is not None and HAS_OPENTELEMETRY:
+        try:
+            _tracer_provider.force_flush(timeout_millis=TRACER_FLUSH_TIMEOUT_MS)
+            _tracer_provider.shutdown()
+        except Exception as e:
+            LOGGER.debug("Error during tracer shutdown: %s", e)
 
 
 def _initialize_tracing() -> None:
@@ -166,74 +185,79 @@ def _initialize_tracing() -> None:
     """
     global _tracer_provider, _is_initialized
 
-    if _is_initialized:
-        return
+    with _init_lock:
+        if _is_initialized:
+            return
 
-    if not HAS_OPENTELEMETRY or not is_tracing_enabled():
-        _is_initialized = True
-        return
+        if not HAS_OPENTELEMETRY or not is_tracing_enabled():
+            _is_initialized = True
+            return
 
-    try:
-        from opentelemetry import trace
-        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-        from opentelemetry.sdk.resources import SERVICE_NAME, Resource
-        from opentelemetry.sdk.trace import TracerProvider
-        from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
+        try:
+            from opentelemetry import trace
+            from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+            from opentelemetry.sdk.resources import SERVICE_NAME, Resource
+            from opentelemetry.sdk.trace import TracerProvider
+            from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
 
-        # Create resource with service name
-        service_name = os.getenv("OTEL_SERVICE_NAME", "qiskit-addon-slc")
-        resource = Resource(attributes={SERVICE_NAME: service_name})
+            # Create resource with service name
+            resource = Resource(attributes={SERVICE_NAME: OTEL_SERVICE_NAME})
 
-        # Create tracer provider
-        _tracer_provider = TracerProvider(resource=resource)
+            # Create tracer provider
+            _tracer_provider = TracerProvider(resource=resource)
 
-        # Determine which exporter to use
-        exporter_type = os.getenv("OTEL_TRACES_EXPORTER", "console").lower()
+            # Determine which exporter to use
+            exporter_type = os.getenv("OTEL_TRACES_EXPORTER", "console").lower()
 
-        if exporter_type == "otlp":
-            # Use OTLP exporter if endpoint is configured
-            otlp_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
-            if otlp_endpoint:
-                exporter = OTLPSpanExporter(endpoint=f"{otlp_endpoint}/v1/traces")
-                LOGGER.info(f"Initialized OTLP span exporter to {otlp_endpoint}")
+            if exporter_type == "otlp":
+                # Use OTLP exporter if endpoint is configured
+                otlp_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+                if otlp_endpoint:
+                    exporter = OTLPSpanExporter(endpoint=f"{otlp_endpoint}/v1/traces")
+                    LOGGER.info("Initialized OTLP span exporter to %s", otlp_endpoint)
+                else:
+                    LOGGER.warning(
+                        "OTLP exporter requested but OTEL_EXPORTER_OTLP_ENDPOINT not set. "
+                        "Falling back to console exporter."
+                    )
+                    exporter = ConsoleSpanExporter()
             else:
-                LOGGER.warning(
-                    "OTLP exporter requested but OTEL_EXPORTER_OTLP_ENDPOINT not set. "
-                    "Falling back to console exporter."
-                )
+                # Default to console exporter
                 exporter = ConsoleSpanExporter()
-        else:
-            # Default to console exporter
-            exporter = ConsoleSpanExporter()
-            LOGGER.info("Initialized console span exporter")
+                LOGGER.info("Initialized console span exporter")
 
-        # Add span processor
-        _tracer_provider.add_span_processor(BatchSpanProcessor(exporter))
+            # Add span processor
+            _tracer_provider.add_span_processor(BatchSpanProcessor(exporter))
 
-        # Set as global tracer provider
-        trace.set_tracer_provider(_tracer_provider)
+            # Set as global tracer provider
+            trace.set_tracer_provider(_tracer_provider)
 
-        _is_initialized = True
-        LOGGER.info("OpenTelemetry tracing initialized successfully")
+            _is_initialized = True
+            LOGGER.info("OpenTelemetry tracing initialized successfully")
 
-    except ImportError as e:
-        LOGGER.warning(
-            f"Failed to initialize OTLP exporter: {e}. "
-            "Install 'opentelemetry-exporter-otlp' for OTLP support. "
-            "Falling back to console exporter."
-        )
-        # Fall back to console exporter
-        from opentelemetry import trace
-        from opentelemetry.sdk.trace import TracerProvider
-        from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
+            # Register cleanup handler for main process
+            atexit.register(_shutdown_tracing)
 
-        _tracer_provider = TracerProvider()
-        _tracer_provider.add_span_processor(BatchSpanProcessor(ConsoleSpanExporter()))
-        trace.set_tracer_provider(_tracer_provider)
-        _is_initialized = True
-    except Exception as e:
-        LOGGER.error(f"Failed to initialize tracing: {e}")
-        _is_initialized = True
+        except ImportError as e:
+            LOGGER.warning(
+                "Failed to initialize OTLP exporter: %s. "
+                "Install 'opentelemetry-exporter-otlp' for OTLP support. "
+                "Falling back to console exporter.",
+                e,
+            )
+            # Fall back to console exporter
+            if _tracer_provider is None:
+                from opentelemetry import trace
+                from opentelemetry.sdk.trace import TracerProvider
+                from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
+
+                _tracer_provider = TracerProvider()
+                _tracer_provider.add_span_processor(BatchSpanProcessor(ConsoleSpanExporter()))
+                trace.set_tracer_provider(_tracer_provider)
+            _is_initialized = True
+        except Exception as e:
+            LOGGER.error("Failed to initialize tracing: %s", e)
+            _is_initialized = True
 
 
 def get_tracer(name: str = "qiskit_addon_slc") -> Any:
@@ -270,10 +294,10 @@ def _inject_trace_context() -> dict[str, str] | None:
 
         carrier: dict[str, str] = {}
         inject(carrier)
-        return carrier if carrier else None
+        return carrier
     except Exception as e:
-        LOGGER.debug(f"Failed to inject trace context: {e}")
-        return None
+        LOGGER.debug("Failed to inject trace context: %s", e)
+        return carrier
 
 
 def _extract_trace_context(carrier: dict[str, str] | None) -> Any:
@@ -286,7 +310,7 @@ def _extract_trace_context(carrier: dict[str, str] | None) -> Any:
 
         return extract(carrier)
     except Exception as e:
-        LOGGER.debug(f"Failed to extract trace context: {e}")
+        LOGGER.debug("Failed to extract trace context: %s", e)
         return None
 
 
@@ -300,7 +324,7 @@ def _attach_context(ctx: Any) -> Any:
 
         return context.attach(ctx)
     except Exception as e:
-        LOGGER.debug(f"Failed to attach context: {e}")
+        LOGGER.debug("Failed to attach context: %s", e)
         return None
 
 
@@ -314,7 +338,7 @@ def _detach_context(token: Any) -> None:
 
         context.detach(token)
     except Exception as e:
-        LOGGER.debug(f"Failed to detach context: {e}")
+        LOGGER.debug("Failed to detach context: %s", e)
 
 
 @contextmanager
@@ -379,7 +403,7 @@ def traced_span(
 
             ctx = set_span_in_context(parent_span)
         except Exception as e:
-            LOGGER.debug(f"Failed to set span in context: {e}")
+            LOGGER.debug("Failed to set span in context: %s", e)
             ctx = None
 
     try:
@@ -419,7 +443,7 @@ def _get_current_worker_index() -> int:
 
     Returns:
         A zero-based worker index when running in a multiprocessing pool worker,
-        otherwise ``0`` as a safe fallback.
+        otherwise ``WORKER_INDEX_NOT_INITIALIZED`` as a safe fallback.
     """
     current_process = mp.current_process()
 
@@ -431,7 +455,7 @@ def _get_current_worker_index() -> int:
     if name_match is not None:
         return int(name_match.group(1)) - 1
 
-    return 0
+    return WORKER_INDEX_NOT_INITIALIZED
 
 
 def initialize_worker(trace_context: dict[str, str] | None = None) -> None:
@@ -463,7 +487,7 @@ def initialize_worker(trace_context: dict[str, str] | None = None) -> None:
     # Get process ID
     pid = os.getpid()
 
-    LOGGER.debug(f"Initializing worker {worker_index} (PID: {pid})")
+    LOGGER.debug("Initializing worker %s (PID: %s)", worker_index, pid)
 
     # Extract parent context if provided
     ctx = _extract_trace_context(trace_context) if trace_context else None
@@ -498,7 +522,7 @@ def initialize_worker(trace_context: dict[str, str] | None = None) -> None:
                 # Store the token so we can detach it later
                 _worker_span_storage.worker_context_token = worker_token
             except Exception as e:
-                LOGGER.debug(f"Failed to set worker span as current: {e}")
+                LOGGER.debug("Failed to set worker span as current: %s", e)
 
         # Store in process-local storage
         _worker_span_storage.span = span
@@ -517,22 +541,22 @@ def initialize_worker(trace_context: dict[str, str] | None = None) -> None:
 
                     otel_context.detach(worker_ctx_token)
                 except Exception as e:
-                    LOGGER.debug(f"Failed to detach worker context: {e}")
+                    LOGGER.debug("Failed to detach worker context: %s", e)
 
             # End worker span
             worker_span = getattr(_worker_span_storage, "span", None)
             if worker_span is not None:
-                LOGGER.debug(f"Ending worker span for worker {worker_index} (PID: {pid})")
+                LOGGER.debug("Ending worker span for worker %s (PID: %s)", worker_index, pid)
                 worker_span.end()
 
                 # Force flush to ensure span is exported before process terminates
                 if HAS_OPENTELEMETRY and _tracer_provider is not None:
                     try:
                         # Force flush all pending spans
-                        _tracer_provider.force_flush(timeout_millis=5000)
-                        LOGGER.debug(f"Flushed spans for worker {worker_index}")
+                        _tracer_provider.force_flush(timeout_millis=TRACER_FLUSH_TIMEOUT_MS)
+                        LOGGER.debug("Flushed spans for worker %s", worker_index)
                     except Exception as e:
-                        LOGGER.debug(f"Failed to flush tracer provider: {e}")
+                        LOGGER.debug("Failed to flush tracer provider: %s", e)
 
             # Detach parent context if it was attached
             ctx_token = getattr(_worker_span_storage, "context_token", None)
@@ -544,18 +568,22 @@ def initialize_worker(trace_context: dict[str, str] | None = None) -> None:
         # Register signal handler for SIGTERM to ensure spans are closed even on pool.terminate()
         def sigterm_handler(_signum: int, _frame: Any) -> None:
             """Handle SIGTERM by cleaning up spans before process terminates."""
-            LOGGER.debug(f"Worker {worker_index} (PID: {pid}) received SIGTERM, cleaning up spans")
-            cleanup_worker_span()
-            # Re-raise SIGTERM to allow normal termination
-            signal.signal(signal.SIGTERM, signal.SIG_DFL)
-            os.kill(os.getpid(), signal.SIGTERM)
+            LOGGER.debug(
+                "Worker %s (PID: %s) received SIGTERM, cleaning up spans", worker_index, pid
+            )
+            try:
+                cleanup_worker_span()
+            except Exception as e:
+                LOGGER.error("Error during cleanup: %s", e)
+            finally:
+                sys.exit(0)
 
         signal.signal(signal.SIGTERM, sigterm_handler)
 
-        LOGGER.debug(f"Worker {worker_index} (PID: {pid}) initialized successfully")
+        LOGGER.debug("Worker %s (PID: %s) initialized successfully", worker_index, pid)
 
     except Exception as e:
-        LOGGER.warning(f"Failed to initialize worker span: {e}")
+        LOGGER.warning("Failed to initialize worker span: %s", e)
         if token is not None:
             _detach_context(token)
 

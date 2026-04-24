@@ -45,11 +45,16 @@ ZERO_ATOL = 10 * sys.float_info.epsilon
 This defaults to the value of ``10 * sys.float_info.epsilon``.
 """
 
-TRACING_ENABLED = os.getenv("QISKIT_SLC_TRACING_ENABLED", "false").lower() == "true"
+TRACING_ENABLED = os.getenv("QISKIT_SLC_TRACING_ENABLED", "false").lower() in (
+    "true",
+    "1",
+    "yes",
+    "on",
+)
 """Whether OpenTelemetry tracing is enabled for profiling parallel computations.
 
 This can be controlled via the ``QISKIT_SLC_TRACING_ENABLED`` environment variable.
-Set to ``"true"`` to enable tracing. Defaults to ``False``.
+Set to ``"true"``, ``"1"``, ``"yes"``, or ``"on"`` to enable tracing. Defaults to ``False``.
 """
 
 OTEL_SERVICE_NAME = os.getenv("OTEL_SERVICE_NAME", "qiskit-addon-slc")
@@ -57,4 +62,16 @@ OTEL_SERVICE_NAME = os.getenv("OTEL_SERVICE_NAME", "qiskit-addon-slc")
 
 This can be controlled via the ``OTEL_SERVICE_NAME`` environment variable.
 Defaults to ``"qiskit-addon-slc"``.
+"""
+
+TRACER_FLUSH_TIMEOUT_MS = 5000
+"""The timeout in milliseconds for flushing OpenTelemetry spans on shutdown.
+
+This defaults to ``5000`` milliseconds (5 seconds).
+"""
+
+WORKER_INDEX_NOT_INITIALIZED = -1
+"""Sentinel value indicating a worker process has not been initialized or is not in a worker context.
+
+This defaults to ``-1``.
 """

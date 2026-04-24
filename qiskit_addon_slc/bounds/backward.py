@@ -78,6 +78,7 @@ def time_evolved_norm_backward(
     pauli = SparsePauliOp(pauli)
 
     # Get worker span and metadata (if running in worker process)
+    # Note: worker_span will be None if not in a worker process, which is handled gracefully by traced_span
     worker_span = get_worker_span()
     worker_info = get_worker_info()
 
