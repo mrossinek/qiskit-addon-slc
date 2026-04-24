@@ -458,6 +458,68 @@ def _get_current_worker_index() -> int:
     return WORKER_INDEX_NOT_INITIALIZED
 
 
+def _cleanup_worker_span(worker_index: int, pid: int) -> None:
+    """Clean up worker span when process terminates.
+
+    Args:
+        worker_index: The worker's index for logging.
+        pid: The worker's process ID for logging.
+    """
+    # Detach worker context first
+    worker_ctx_token = getattr(_worker_span_storage, "worker_context_token", None)
+    if worker_ctx_token is not None and HAS_OPENTELEMETRY:
+        try:
+            from opentelemetry import context as otel_context
+
+            otel_context.detach(worker_ctx_token)
+        except Exception as e:
+            LOGGER.debug("Failed to detach worker context: %s", e)
+
+    # End worker span
+    worker_span = getattr(_worker_span_storage, "span", None)
+    if worker_span is not None:
+        LOGGER.debug("Ending worker span for worker %s (PID: %s)", worker_index, pid)
+        worker_span.end()
+
+        # Force flush to ensure span is exported before process terminates
+        if HAS_OPENTELEMETRY and _tracer_provider is not None:
+            try:
+                # Force flush all pending spans
+                _tracer_provider.force_flush(timeout_millis=TRACER_FLUSH_TIMEOUT_MS)
+                LOGGER.debug("Flushed spans for worker %s", worker_index)
+            except Exception as e:
+                LOGGER.debug("Failed to flush tracer provider: %s", e)
+
+    # Detach parent context if it was attached
+    ctx_token = getattr(_worker_span_storage, "context_token", None)
+    if ctx_token is not None:
+        _detach_context(ctx_token)
+
+
+def _create_sigterm_handler(worker_index: int, pid: int) -> Any:
+    """Create a SIGTERM handler for worker cleanup.
+
+    Args:
+        worker_index: The worker's index for logging.
+        pid: The worker's process ID for logging.
+
+    Returns:
+        A signal handler function.
+    """
+
+    def sigterm_handler(_signum: int, _frame: Any) -> None:
+        """Handle SIGTERM by cleaning up spans before process terminates."""
+        LOGGER.debug("Worker %s (PID: %s) received SIGTERM, cleaning up spans", worker_index, pid)
+        try:
+            _cleanup_worker_span(worker_index, pid)
+        except Exception as e:
+            LOGGER.error("Error during cleanup: %s", e)
+        finally:
+            sys.exit(0)
+
+    return sigterm_handler
+
+
 def initialize_worker(trace_context: dict[str, str] | None = None) -> None:
     """Initialize worker process with its own parent span.
 
@@ -531,54 +593,10 @@ def initialize_worker(trace_context: dict[str, str] | None = None) -> None:
         _worker_span_storage.context_token = token
 
         # Register cleanup function
-        def cleanup_worker_span() -> None:
-            """Clean up worker span when process terminates."""
-            # Detach worker context first
-            worker_ctx_token = getattr(_worker_span_storage, "worker_context_token", None)
-            if worker_ctx_token is not None and HAS_OPENTELEMETRY:
-                try:
-                    from opentelemetry import context as otel_context
+        atexit.register(lambda: _cleanup_worker_span(worker_index, pid))
 
-                    otel_context.detach(worker_ctx_token)
-                except Exception as e:
-                    LOGGER.debug("Failed to detach worker context: %s", e)
-
-            # End worker span
-            worker_span = getattr(_worker_span_storage, "span", None)
-            if worker_span is not None:
-                LOGGER.debug("Ending worker span for worker %s (PID: %s)", worker_index, pid)
-                worker_span.end()
-
-                # Force flush to ensure span is exported before process terminates
-                if HAS_OPENTELEMETRY and _tracer_provider is not None:
-                    try:
-                        # Force flush all pending spans
-                        _tracer_provider.force_flush(timeout_millis=TRACER_FLUSH_TIMEOUT_MS)
-                        LOGGER.debug("Flushed spans for worker %s", worker_index)
-                    except Exception as e:
-                        LOGGER.debug("Failed to flush tracer provider: %s", e)
-
-            # Detach parent context if it was attached
-            ctx_token = getattr(_worker_span_storage, "context_token", None)
-            if ctx_token is not None:
-                _detach_context(ctx_token)
-
-        atexit.register(cleanup_worker_span)
-
-        # Register signal handler for SIGTERM to ensure spans are closed even on pool.terminate()
-        def sigterm_handler(_signum: int, _frame: Any) -> None:
-            """Handle SIGTERM by cleaning up spans before process terminates."""
-            LOGGER.debug(
-                "Worker %s (PID: %s) received SIGTERM, cleaning up spans", worker_index, pid
-            )
-            try:
-                cleanup_worker_span()
-            except Exception as e:
-                LOGGER.error("Error during cleanup: %s", e)
-            finally:
-                sys.exit(0)
-
-        signal.signal(signal.SIGTERM, sigterm_handler)
+        # Register signal handler for SIGTERM
+        signal.signal(signal.SIGTERM, _create_sigterm_handler(worker_index, pid))
 
         LOGGER.debug("Worker %s (PID: %s) initialized successfully", worker_index, pid)
 
