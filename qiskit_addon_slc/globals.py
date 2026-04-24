@@ -27,6 +27,10 @@ This module provides a number of globally configurable settings.
 .. autoclass:: TRACING_ENABLED
 
 .. autoclass:: OTEL_SERVICE_NAME
+
+.. autoclass:: OTEL_TRACES_EXPORTER
+
+.. autoclass:: OTEL_EXPORTER_OTLP_ENDPOINT
 """
 
 import os
@@ -62,6 +66,22 @@ OTEL_SERVICE_NAME = os.getenv("OTEL_SERVICE_NAME", "qiskit-addon-slc")
 
 This can be controlled via the ``OTEL_SERVICE_NAME`` environment variable.
 Defaults to ``"qiskit-addon-slc"``.
+"""
+
+OTEL_TRACES_EXPORTER = os.getenv("OTEL_TRACES_EXPORTER", "console")
+"""The OpenTelemetry traces exporter type to use.
+
+This can be controlled via the ``OTEL_TRACES_EXPORTER`` environment variable.
+Supported values are ``"console"`` (default) and ``"otlp"``.
+Defaults to ``"console"``.
+"""
+
+OTEL_EXPORTER_OTLP_ENDPOINT = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+"""The OTLP exporter endpoint URL.
+
+This can be controlled via the ``OTEL_EXPORTER_OTLP_ENDPOINT`` environment variable.
+Required when ``OTEL_TRACES_EXPORTER`` is set to ``"otlp"``.
+Defaults to ``None``.
 """
 
 TRACER_FLUSH_TIMEOUT_MS = 5000

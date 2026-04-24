@@ -67,10 +67,18 @@ def test_is_tracing_enabled_default(clean_env):
 
 
 @pytest.mark.skipif(not HAS_OPENTELEMETRY, reason="OpenTelemetry not installed")
-def test_is_tracing_enabled_true(clean_env):
-    """Test that tracing can be enabled via environment variable."""
-    clean_env.setenv("QISKIT_SLC_TRACING_ENABLED", "true")
-    assert is_tracing_enabled() is True
+def test_is_tracing_enabled_true():
+    """Test that tracing can be enabled programmatically."""
+    from qiskit_addon_slc import globals as slc_globals
+
+    # Store original value
+    original = slc_globals.TRACING_ENABLED
+    try:
+        slc_globals.TRACING_ENABLED = True
+        assert is_tracing_enabled() is True
+    finally:
+        # Restore original value
+        slc_globals.TRACING_ENABLED = original
 
 
 def test_is_tracing_enabled_false(clean_env):
@@ -80,13 +88,21 @@ def test_is_tracing_enabled_false(clean_env):
 
 
 @pytest.mark.skipif(not HAS_OPENTELEMETRY, reason="OpenTelemetry not installed")
-def test_is_tracing_enabled_case_insensitive(clean_env):
-    """Test that environment variable is case-insensitive."""
-    clean_env.setenv("QISKIT_SLC_TRACING_ENABLED", "true")
-    assert is_tracing_enabled() is True
+def test_is_tracing_enabled_case_insensitive():
+    """Test that tracing can be toggled programmatically."""
+    from qiskit_addon_slc import globals as slc_globals
 
-    clean_env.setenv("QISKIT_SLC_TRACING_ENABLED", "false")
-    assert is_tracing_enabled() is False
+    # Store original value
+    original = slc_globals.TRACING_ENABLED
+    try:
+        slc_globals.TRACING_ENABLED = True
+        assert is_tracing_enabled() is True
+
+        slc_globals.TRACING_ENABLED = False
+        assert is_tracing_enabled() is False
+    finally:
+        # Restore original value
+        slc_globals.TRACING_ENABLED = original
 
 
 def test_get_tracer_returns_none_when_disabled(clean_env):

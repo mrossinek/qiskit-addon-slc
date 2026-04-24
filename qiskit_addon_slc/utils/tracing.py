@@ -33,11 +33,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any
 
-from ..globals import (
-    OTEL_SERVICE_NAME,
-    TRACER_FLUSH_TIMEOUT_MS,
-    WORKER_INDEX_NOT_INITIALIZED,
-)
+from .. import globals as slc_globals
 from ..optionals import HAS_OPENTELEMETRY
 
 LOGGER = logging.getLogger(__name__)
@@ -154,16 +150,19 @@ class NoOpTracer:
 
 
 def is_tracing_enabled() -> bool:
-    """Check if tracing is enabled via environment variable.
+    """Check if tracing is enabled.
 
     Returns:
         True if tracing is enabled and OpenTelemetry is available, False otherwise.
+
+    Note:
+        Tracing can be enabled by setting the ``TRACING_ENABLED`` global variable
+        or via the ``QISKIT_SLC_TRACING_ENABLED`` environment variable at import time.
     """
     if not HAS_OPENTELEMETRY:
         return False
 
-    value = os.getenv("QISKIT_SLC_TRACING_ENABLED", "false").lower()
-    return value in ("true", "1", "yes", "on")
+    return slc_globals.TRACING_ENABLED
 
 
 def _shutdown_tracing() -> None:
@@ -171,7 +170,7 @@ def _shutdown_tracing() -> None:
     global _tracer_provider
     if _tracer_provider is not None and HAS_OPENTELEMETRY:
         try:
-            _tracer_provider.force_flush(timeout_millis=TRACER_FLUSH_TIMEOUT_MS)
+            _tracer_provider.force_flush(timeout_millis=slc_globals.TRACER_FLUSH_TIMEOUT_MS)
             _tracer_provider.shutdown()
         except Exception as e:
             LOGGER.debug("Error during tracer shutdown: %s", e)
@@ -201,17 +200,17 @@ def _initialize_tracing() -> None:
             from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
 
             # Create resource with service name
-            resource = Resource(attributes={SERVICE_NAME: OTEL_SERVICE_NAME})
+            resource = Resource(attributes={SERVICE_NAME: slc_globals.OTEL_SERVICE_NAME})
 
             # Create tracer provider
             _tracer_provider = TracerProvider(resource=resource)
 
             # Determine which exporter to use
-            exporter_type = os.getenv("OTEL_TRACES_EXPORTER", "console").lower()
+            exporter_type = slc_globals.OTEL_TRACES_EXPORTER.lower()
 
             if exporter_type == "otlp":
                 # Use OTLP exporter if endpoint is configured
-                otlp_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+                otlp_endpoint = slc_globals.OTEL_EXPORTER_OTLP_ENDPOINT
                 if otlp_endpoint:
                     exporter = OTLPSpanExporter(endpoint=f"{otlp_endpoint}/v1/traces")
                     LOGGER.info("Initialized OTLP span exporter to %s", otlp_endpoint)
@@ -455,7 +454,7 @@ def _get_current_worker_index() -> int:
     if name_match is not None:
         return int(name_match.group(1)) - 1
 
-    return WORKER_INDEX_NOT_INITIALIZED
+    return slc_globals.WORKER_INDEX_NOT_INITIALIZED
 
 
 def _cleanup_worker_span(worker_index: int, pid: int) -> None:
@@ -485,7 +484,7 @@ def _cleanup_worker_span(worker_index: int, pid: int) -> None:
         if HAS_OPENTELEMETRY and _tracer_provider is not None:
             try:
                 # Force flush all pending spans
-                _tracer_provider.force_flush(timeout_millis=TRACER_FLUSH_TIMEOUT_MS)
+                _tracer_provider.force_flush(timeout_millis=slc_globals.TRACER_FLUSH_TIMEOUT_MS)
                 LOGGER.debug("Flushed spans for worker %s", worker_index)
             except Exception as e:
                 LOGGER.debug("Failed to flush tracer provider: %s", e)
