@@ -90,6 +90,12 @@ TRACER_FLUSH_TIMEOUT_MS = 5000
 This defaults to ``5000`` milliseconds (5 seconds).
 """
 
+WORKER_CLEANUP_TIMEOUT = 10
+"""The timeout in seconds for workers to be cleaned up before forceful termination.
+
+This defaults to ``10`` seconds.
+"""
+
 WORKER_INDEX_NOT_INITIALIZED = -1
 """Sentinel value indicating a worker process has not been initialized or is not in a worker context.
 
