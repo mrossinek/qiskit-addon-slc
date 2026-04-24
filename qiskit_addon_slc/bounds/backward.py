@@ -82,7 +82,7 @@ def time_evolved_norm_backward(
     # Prepare span attributes with worker metadata
     span_attributes = {
         "pauli": str(pauli),
-        "pauli.num_qubits": int((pauli.x | pauli.z).sum()),
+        "pauli.num_qubits": int(np.any((pauli.x, pauli.z), axis=(0,)).sum()),
         "gates.count": len(gates.gates),
     }
 
@@ -111,7 +111,7 @@ def time_evolved_norm_backward(
             inner_span.set_attribute("pauli_prop.num_terms", len(pauli))
             inner_span.set_attribute(
                 "pauli_prop.num_qubits",
-                int((pauli.paulis.x | pauli.paulis.z).sum(axis=1).nonzero()[0][-1]),
+                int(np.any((pauli.paulis.x, pauli.paulis.z), axis=(0, 1)).sum()),
             )
 
         trunc_bias = float(2 * trunc_onenorm)

@@ -97,9 +97,9 @@ def time_evolved_norm_forward(
     # Prepare span attributes with worker metadata
     span_attributes = {
         "pauli": str(pauli),
-        "pauli.num_qubits": int((pauli.x | pauli.z).sum()),
+        "pauli.num_qubits": int(np.any((pauli.x, pauli.z), axis=(0,)).sum()),
         "observable": str(observable),
-        "observable.num_qubits": int((observable.x | observable.z).sum()),
+        "observable.num_qubits": int(np.any((observable.x, observable.z), axis=(0,)).sum()),
         "gates.count": len(gates.gates),
     }
 
@@ -129,7 +129,7 @@ def time_evolved_norm_forward(
             inner_span.set_attribute("pauli_prop.num_terms", len(pauli))
             inner_span.set_attribute(
                 "pauli_prop.num_qubits",
-                int((pauli.paulis.x | pauli.paulis.z).sum(axis=1).nonzero()[0][-1]),
+                int(np.any((pauli.paulis.x, pauli.paulis.z), axis=(0, 1)).sum()),
             )
 
         trunc_bias = float(2 * trunc_onenorm)
@@ -178,39 +178,42 @@ def time_evolved_norm_forward(
             one_norm_loss = max(one_norm_loss, np.float64(0.0))
             inner_span.set_attribute("commutator.one_norm_loss", float(one_norm_loss))
 
-        trunc_bias += float(one_norm_loss)
+            trunc_bias += float(one_norm_loss)
 
-        if trunc_bias >= 2.0:
-            span.add_event("computation_aborted", {"reason": "truncation_bias_exceeds_bound"})
-            result = CommutatorBounds(float("NaN"), trunc_bias, False)
-            span.set_attribute("result.commutator_bound", result.commutator_bound)
-            span.set_attribute("result.truncation_bias", result.truncation_bias)
-            span.set_attribute("result.fallback_to_tri_ineq", result.fallback_to_tri_ineq)
-            return result
+            if trunc_bias >= 2.0:
+                span.add_event("computation_aborted", {"reason": "truncation_bias_exceeds_bound"})
+                result = CommutatorBounds(float("NaN"), trunc_bias, False)
+                span.set_attribute("result.commutator_bound", result.commutator_bound)
+                span.set_attribute("result.truncation_bias", result.truncation_bias)
+                span.set_attribute("result.fallback_to_tri_ineq", result.fallback_to_tri_ineq)
+                return result
 
-        # Handle case where commutator is 0:
-        if np.logical_not(np.any((commutator.paulis.x, commutator.paulis.z))) and np.isclose(
-            np.sum(commutator.coeffs), 0
-        ):
-            result = CommutatorBounds(0.0, trunc_bias, False)
-            span.add_event("zero_commutator")
-            span.set_attribute("result.commutator_bound", result.commutator_bound)
-            span.set_attribute("result.truncation_bias", result.truncation_bias)
-            span.set_attribute("result.fallback_to_tri_ineq", result.fallback_to_tri_ineq)
-            return result
+            # Handle case where commutator is 0:
+            if np.logical_not(np.any((commutator.paulis.x, commutator.paulis.z))) and np.isclose(
+                np.sum(commutator.coeffs), 0
+            ):
+                result = CommutatorBounds(0.0, trunc_bias, False)
+                span.add_event("zero_commutator")
+                span.set_attribute("result.commutator_bound", result.commutator_bound)
+                span.set_attribute("result.truncation_bias", result.truncation_bias)
+                span.set_attribute("result.fallback_to_tri_ineq", result.fallback_to_tri_ineq)
+                return result
 
-        # If any qubits have only identity Paulis, remove those qubits.
-        # Not that important for operator evolution but possibly important for evaluating spectral norm:
-        identity_qb_mask = np.logical_not(
-            np.any((commutator.paulis.z, commutator.paulis.x), axis=(0, 1))
-        )
-        if np.any(identity_qb_mask):
-            identity_qbs = np.where(identity_qb_mask)[0]
-            commutator = SparsePauliOp(
-                commutator.paulis.delete(identity_qbs, qubit=True),
-                commutator.coeffs.copy(),
-                copy=True,
-            ).simplify(atol=0)
+            # If any qubits have only identity Paulis, remove those qubits.
+            # Not that important for operator evolution but possibly important for evaluating spectral norm:
+            identity_qb_mask = np.logical_not(
+                np.any((commutator.paulis.z, commutator.paulis.x), axis=(0, 1))
+            )
+            if np.any(identity_qb_mask):
+                identity_qbs = np.where(identity_qb_mask)[0]
+                commutator = SparsePauliOp(
+                    commutator.paulis.delete(identity_qbs, qubit=True),
+                    commutator.coeffs.copy(),
+                    copy=True,
+                ).simplify(atol=0)
+
+            inner_span.set_attribute("commutator.num_terms", len(commutator))
+            inner_span.set_attribute("commutator.num_qubits", commutator.num_qubits)
 
         # Handle case where a comm_norm_order other than 2 was requested:
         if comm_norm_order != 2:
