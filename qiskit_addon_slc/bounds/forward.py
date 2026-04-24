@@ -126,6 +126,11 @@ def time_evolved_norm_forward(
                 frame="s",
             )
             inner_span.set_attribute("pauli_prop.one_norm", float(trunc_onenorm))
+            inner_span.set_attribute("pauli_prop.num_terms", len(pauli))
+            inner_span.set_attribute(
+                "pauli_prop.num_qubits",
+                int((pauli.paulis.x | pauli.paulis.z).sum(axis=1).nonzero()[0][-1]),
+            )
 
         trunc_bias = float(2 * trunc_onenorm)
         if trunc_bias >= 2.0:
