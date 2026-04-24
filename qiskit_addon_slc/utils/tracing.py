@@ -336,6 +336,13 @@ def _detach_context(token: Any) -> None:
         from opentelemetry import context
 
         context.detach(token)
+    except RuntimeError as e:
+        # Suppress "already been used" errors - expected in multiprocessing cleanup scenarios
+        # where multiple cleanup handlers (atexit, SIGTERM) may attempt to detach the same token
+        if "already been used" in str(e):
+            LOGGER.debug("Context token already detached (expected in cleanup): %s", e)
+        else:
+            LOGGER.debug("Failed to detach context: %s", e)
     except Exception as e:
         LOGGER.debug("Failed to detach context: %s", e)
 
@@ -464,6 +471,15 @@ def _cleanup_worker_span(worker_index: int, pid: int) -> None:
         worker_index: The worker's index for logging.
         pid: The worker's process ID for logging.
     """
+    # Guard against double cleanup (can happen with both atexit and SIGTERM handlers)
+    cleanup_performed = getattr(_worker_span_storage, "cleanup_performed", False)
+    if cleanup_performed:
+        LOGGER.debug("Cleanup already performed for worker %s (PID: %s)", worker_index, pid)
+        return
+
+    # Mark cleanup as performed
+    _worker_span_storage.cleanup_performed = True
+
     # Detach worker context first
     worker_ctx_token = getattr(_worker_span_storage, "worker_context_token", None)
     if worker_ctx_token is not None and HAS_OPENTELEMETRY:
@@ -471,6 +487,7 @@ def _cleanup_worker_span(worker_index: int, pid: int) -> None:
             from opentelemetry import context as otel_context
 
             otel_context.detach(worker_ctx_token)
+            _worker_span_storage.worker_context_token = None  # Clear after successful detach
         except Exception as e:
             LOGGER.debug("Failed to detach worker context: %s", e)
 
@@ -493,6 +510,7 @@ def _cleanup_worker_span(worker_index: int, pid: int) -> None:
     ctx_token = getattr(_worker_span_storage, "context_token", None)
     if ctx_token is not None:
         _detach_context(ctx_token)
+        _worker_span_storage.context_token = None  # Clear after successful detach
 
 
 def _create_sigterm_handler(worker_index: int, pid: int) -> Any:
@@ -590,6 +608,7 @@ def initialize_worker(trace_context: dict[str, str] | None = None) -> None:
         _worker_span_storage.worker_index = worker_index
         _worker_span_storage.pid = pid
         _worker_span_storage.context_token = token
+        _worker_span_storage.cleanup_performed = False  # Initialize cleanup flag
 
         # Register cleanup function
         atexit.register(lambda: _cleanup_worker_span(worker_index, pid))
