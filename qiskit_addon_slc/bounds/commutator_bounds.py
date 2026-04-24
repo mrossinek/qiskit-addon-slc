@@ -155,7 +155,7 @@ def compute_bounds(
         )
         span.add_event("worker_pool_init_completed")
 
-        tasks = set()
+        tasks: set[mp.pool.AsyncResult] = set()
 
         with traced_span("task_spawning") as inner_span:
             net_clifford = Clifford.from_label("I" * circuit.num_qubits)
@@ -267,6 +267,7 @@ def compute_bounds(
                     task = pool.apply_async(
                         norm_fn,
                         [pauli],
+                        {"task_idx": len(tasks)},
                         callback=partial(_insert_rate, box_id=box_id, rate_idx=pauli_idx),
                     )
                     tasks.add(task)

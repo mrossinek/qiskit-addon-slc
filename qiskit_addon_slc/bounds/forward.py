@@ -57,6 +57,7 @@ def time_evolved_norm_forward(
     comm_norm_order: int = 2,
     atol_simplify: float = 1e-8,
     atol_eigenvalue: float = 1e-8,
+    task_idx: int | None = None,
 ) -> CommutatorBounds:
     """Compute the bound of an error Pauli term evolved forward to the target observable.
 
@@ -85,6 +86,7 @@ def time_evolved_norm_forward(
         atol_eigenvalue: the absolute tolerance used for detecting convergence of the commutator's
             eigenvalue. Loosening this tolerance will result in a less accurate eigenvalue as
             computed by the iterative Davidson eigensolver.
+        task_idx: an optional identifier of this task for tracing metadata.
 
     Returns:
         The unequal-time commutator bound.
@@ -101,12 +103,18 @@ def time_evolved_norm_forward(
         "observable": str(observable),
         "observable.num_qubits": int(np.any((observable.x, observable.z), axis=(0,)).sum()),
         "gates.count": len(gates.gates),
+        "task_idx": task_idx,
     }
 
     # Add worker metadata if available
     if worker_info["worker_index"] >= 0:
         span_attributes["worker.index"] = worker_info["worker_index"]
         span_attributes["worker.pid"] = worker_info["pid"]
+
+    if worker_span is not None:
+        task_counter = worker_span.attributes.get("tasks_processed", 0)
+        worker_span.set_attribute("tasks_processed", task_counter + 1)
+        worker_span.add_event("processing_new_task", {"task_idx": task_idx})
 
     with traced_span(
         "forward_norm_computation",

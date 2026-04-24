@@ -90,6 +90,12 @@ TRACER_FLUSH_TIMEOUT_MS = 5000
 This defaults to ``5000`` milliseconds (5 seconds).
 """
 
+TRACER_SPAN_MAXIMUM_EVENTS = 8192
+"""The maximum number of events to keep for any Span.
+
+This defaults to ``8192``.
+"""
+
 WORKER_CLEANUP_TIMEOUT = 10
 """The timeout in seconds for workers to be cleaned up before forceful termination.
 

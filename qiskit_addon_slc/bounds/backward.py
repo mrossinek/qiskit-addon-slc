@@ -47,6 +47,7 @@ def time_evolved_norm_backward(
     gates: RotationGates,
     *,
     evolution_max_terms: int = np.iinfo(np.uint).max,
+    task_idx: int | None = None,
 ) -> CommutatorBounds:
     r"""Bound the effect of an error Pauli term on the quantum state by evolving the error backward.
 
@@ -69,6 +70,7 @@ def time_evolved_norm_backward(
             :func:`~pauli_prop.propagation.propagate_through_rotation_gates`).
         evolution_max_terms: the maximum number of operator terms to keep track of during the
             evolution.
+        task_idx: an optional identifier of this task for tracing metadata.
 
     Returns:
         The unequal-time commutator bound :math:`\| \left[E, \rho\right] \|_1` for Pauli error
@@ -84,12 +86,18 @@ def time_evolved_norm_backward(
         "pauli": str(pauli),
         "pauli.num_qubits": int(np.any((pauli.x, pauli.z), axis=(0,)).sum()),
         "gates.count": len(gates.gates),
+        "task_idx": task_idx,
     }
 
     # Add worker metadata if available
     if worker_info["worker_index"] >= 0:
         span_attributes["worker.index"] = worker_info["worker_index"]
         span_attributes["worker.pid"] = worker_info["pid"]
+
+    if worker_span is not None and task_idx is not None:
+        task_counter = worker_span.attributes.get("tasks_processed", 0)
+        worker_span.set_attribute("tasks_processed", task_counter + 1)
+        worker_span.add_event("processing_new_task", {"task_idx": task_idx})
 
     with traced_span(
         "backward_norm_computation",

@@ -196,14 +196,17 @@ def _initialize_tracing() -> None:
             from opentelemetry import trace
             from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
             from opentelemetry.sdk.resources import SERVICE_NAME, Resource
-            from opentelemetry.sdk.trace import TracerProvider
+            from opentelemetry.sdk.trace import SpanLimits, TracerProvider
             from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
 
             # Create resource with service name
             resource = Resource(attributes={SERVICE_NAME: slc_globals.OTEL_SERVICE_NAME})
 
             # Create tracer provider
-            _tracer_provider = TracerProvider(resource=resource)
+            _tracer_provider = TracerProvider(
+                resource=resource,
+                span_limits=SpanLimits(max_events=slc_globals.TRACER_SPAN_MAXIMUM_EVENTS),
+            )
 
             # Determine which exporter to use
             exporter_type = slc_globals.OTEL_TRACES_EXPORTER.lower()
