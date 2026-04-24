@@ -97,9 +97,9 @@ def time_evolved_norm_forward(
     # Prepare span attributes with worker metadata
     span_attributes = {
         "pauli": str(pauli),
-        "pauli.num_qubits": pauli.num_qubits,
+        "pauli.num_qubits": int((pauli.x | pauli.z).sum()),
         "observable": str(observable),
-        "observable.num_qubits": observable.num_qubits,
+        "observable.num_qubits": int((observable.x | observable.z).sum()),
         "gates.count": len(gates.gates),
     }
 
@@ -359,7 +359,7 @@ def compute_forward_bounds(
         "compute_forward_bounds",
         attributes={
             "circuit.num_qubits": circuit.num_qubits,
-            "observable.num_qubits": pauli.num_qubits,
+            "observable.num_qubits": int((pauli.x | pauli.z).sum()),
         },
     ) as span:
         span.add_event("circuit_preparation")

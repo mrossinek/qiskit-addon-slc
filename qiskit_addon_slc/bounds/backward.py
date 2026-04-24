@@ -74,9 +74,6 @@ def time_evolved_norm_backward(
         The unequal-time commutator bound :math:`\| \left[E, \rho\right] \|_1` for Pauli error
         :math:`E` and state :math:`\rho`, where the norm is the Schatten 1 norm (nuclear norm).
     """
-    # Convert the single Pauli to a SparsePauliOp which we can then evolve
-    pauli = SparsePauliOp(pauli)
-
     # Get worker span and metadata (if running in worker process)
     # Note: worker_span will be None if not in a worker process, which is handled gracefully by traced_span
     worker_span = get_worker_span()
@@ -85,7 +82,7 @@ def time_evolved_norm_backward(
     # Prepare span attributes with worker metadata
     span_attributes = {
         "pauli": str(pauli),
-        "pauli.num_qubits": pauli.num_qubits,
+        "pauli.num_qubits": int((pauli.x | pauli.z).sum()),
         "gates.count": len(gates.gates),
     }
 
@@ -99,6 +96,9 @@ def time_evolved_norm_backward(
         parent_span=worker_span,
         attributes=span_attributes,
     ) as span:
+        # Convert the single Pauli to a SparsePauliOp which we can then evolve
+        pauli = SparsePauliOp(pauli)
+
         with traced_span("pauli_prop") as inner_span:
             pauli, trunc_onenorm = propagate_through_rotation_gates(
                 operator=pauli,
