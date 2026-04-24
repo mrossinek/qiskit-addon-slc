@@ -155,7 +155,9 @@ def compute_bounds(
         )
         span.add_event("worker_pool_init_completed")
 
-        with traced_span("main") as inner_span:
+        tasks = set()
+
+        with traced_span("task_spawning") as inner_span:
             net_clifford = Clifford.from_label("I" * circuit.num_qubits)
             rot_gates = RotationGates([], [], [])
 
@@ -209,11 +211,7 @@ def compute_bounds(
                 gathered_bounds[box_id][0][rate_idx] = bound.min()
 
             start = time.time()
-            if inner_span is not None:
-                inner_span.add_event("task_spawning_started")
             LOGGER.debug("Starting to spawn bound computation tasks")
-
-            tasks = set()
 
             encountered_num_boxes = 0
 
@@ -283,11 +281,11 @@ def compute_bounds(
             LOGGER.debug(f"Total number of spawned tasks: {total_num_tasks}")
 
             # Add span event for task spawning completion
-            inner_span.add_event(
-                "task_spawning_completed",
-                {"total_tasks": total_num_tasks, "encountered_boxes": encountered_num_boxes},
-            )
+            inner_span.set_attribute("total_tasks", total_num_tasks)
+            inner_span.set_attribute("encountered_boxes", encountered_num_boxes)
 
+        # Now we closed the task_spawning span and start a new one for progress tracking
+        with traced_span("progress_tracking") as inner_span:
             len_progress_indicator = 50
             per_progress_char = total_num_tasks / len_progress_indicator
 
@@ -355,14 +353,15 @@ def compute_bounds(
 
             pool.join()
 
-            # Add span event for computation completion
-            inner_span.add_event(
-                "computation_completed",
-                {"completed_tasks": completed, "total_tasks": total_num_tasks},
-            )
+        # Add span event for computation completion
+        span.add_event(
+            "computation_completed",
+            {"completed_tasks": completed, "total_tasks": total_num_tasks},
+        )
 
-            comm_norms: Bounds = {
-                box_id: PauliLindbladMap.from_components(bounds[0], bounds[1])
-                for box_id, bounds in gathered_bounds.items()
-            }
-            return comm_norms
+        comm_norms: Bounds = {
+            box_id: PauliLindbladMap.from_components(bounds[0], bounds[1])
+            for box_id, bounds in gathered_bounds.items()
+        }
+        span.add_event("completed_bounds_generation")
+        return comm_norms
