@@ -284,6 +284,22 @@ def compute_bounds(
             inner_span.set_attribute("total_tasks", total_num_tasks)
             inner_span.set_attribute("encountered_boxes", encountered_num_boxes)
 
+        def _cleanup_worker_pool(pool, tasks, inner_span):
+            pool.close()
+            LOGGER.warning("Waiting for workers to finish current tasks and clean up spans...")
+
+            cleanup_start = time.time()
+            while time.time() - cleanup_start < slc_globals.WORKER_CLEANUP_TIMEOUT:
+                if all(t.ready() for t in tasks):
+                    LOGGER.warning("All tasks completed, workers can clean up properly")
+                    return
+                time.sleep(0.1)
+
+            # Cleanup timeout reached - forcefully terminate workers
+            inner_span.add_event("cleanup_timeout_reached")
+            LOGGER.warning("Cleanup timeout reached, terminating workers")
+            pool.terminate()
+
         # Now we closed the task_spawning span and start a new one for progress tracking
         with traced_span("progress_tracking") as inner_span:
             len_progress_indicator = 50
@@ -308,46 +324,14 @@ def compute_bounds(
                     if timeout is not None and (time.time() - start) > timeout:
                         LOGGER.warning(f"Reached user-specified time out of {timeout} seconds!")
                         inner_span.add_event("computation_timeout_reached")
-                        # Close pool to prevent new tasks, allowing workers to finish current tasks
-                        # and properly clean up their spans via atexit handlers
-                        pool.close()
-                        LOGGER.warning(
-                            "Waiting for workers to finish current tasks and clean up spans..."
-                        )
-                        # Give workers time to finish current tasks and flush spans
-                        cleanup_start = time.time()
-                        while time.time() - cleanup_start < slc_globals.WORKER_CLEANUP_TIMEOUT:
-                            # Check if all remaining tasks are done
-                            if all(t.ready() for t in tasks):
-                                LOGGER.warning("All tasks completed, workers can clean up properly")
-                                break
-                            time.sleep(0.1)
-                        else:
-                            inner_span.add_event("cleanup_timeout_reached")
-                            LOGGER.warning("Cleanup timeout reached, terminating workers")
-                            pool.terminate()
+                        _cleanup_worker_pool(pool, tasks, inner_span)
                         break
                 else:
                     pool.close()
             except KeyboardInterrupt:
                 LOGGER.warning("Caught KeyboardInterrupt! Terminating pending bound computations.")
                 inner_span.add_event("keyboard_interrupt_received")
-                # Close pool to prevent new tasks, allowing workers to finish current tasks
-                # and properly clean up their spans via atexit handlers
-                pool.close()
-                LOGGER.warning("Waiting for workers to finish current tasks and clean up spans...")
-                # Give workers time to finish current tasks and flush spans (max 5 seconds for interrupt)
-                cleanup_start = time.time()
-                while time.time() - cleanup_start < slc_globals.WORKER_CLEANUP_TIMEOUT:
-                    # Check if all remaining tasks are done
-                    if all(t.ready() for t in tasks):
-                        LOGGER.warning("All tasks completed, workers can clean up properly")
-                        break
-                    time.sleep(0.1)
-                else:
-                    inner_span.add_event("cleanup_timeout_reached")
-                    LOGGER.warning("Cleanup timeout reached, terminating workers")
-                    pool.terminate()
+                _cleanup_worker_pool(pool, tasks, inner_span)
 
             tasks = {t for t in tasks if not t.ready()}
             completed = total_num_tasks - len(tasks)
