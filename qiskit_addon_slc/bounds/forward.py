@@ -214,6 +214,11 @@ def time_evolved_norm_forward(
 
             inner_span.set_attribute("commutator.num_terms", len(commutator))
             inner_span.set_attribute("commutator.num_qubits", commutator.num_qubits)
+            if len(commutator) > 1:
+                abs_coeffs = np.abs(commutator.coeffs)
+                inner_span.set_attribute("commutator.min_abs_coeff", float(np.min(abs_coeffs)))
+                inner_span.set_attribute("commutator.max_abs_coeff", float(np.max(abs_coeffs)))
+                inner_span.set_attribute("commutator.mean_abs_coeff", float(np.mean(abs_coeffs)))
 
         # Handle case where a comm_norm_order other than 2 was requested:
         if comm_norm_order != 2:
