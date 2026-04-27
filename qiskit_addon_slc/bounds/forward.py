@@ -144,7 +144,10 @@ def time_evolved_norm_forward(
         if trunc_bias >= 2.0:
             result = CommutatorBounds(float("NaN"), trunc_bias, False)
             span.add_event("computation_aborted", {"reason": "truncation_bias_exceeds_bound"})
-            span.set_attribute("result.commutator_bound", result.commutator_bound)
+            span.set_attribute(
+                "result.commutator_bound",
+                "NaN" if np.isnan(result.commutator_bound) else result.commutator_bound,
+            )
             span.set_attribute("result.truncation_bias", result.truncation_bias)
             span.set_attribute("result.fallback_to_tri_ineq", result.fallback_to_tri_ineq)
             return result
@@ -191,7 +194,10 @@ def time_evolved_norm_forward(
             if trunc_bias >= 2.0:
                 span.add_event("computation_aborted", {"reason": "truncation_bias_exceeds_bound"})
                 result = CommutatorBounds(float("NaN"), trunc_bias, False)
-                span.set_attribute("result.commutator_bound", result.commutator_bound)
+                span.set_attribute(
+                    "result.commutator_bound",
+                    "NaN" if np.isnan(result.commutator_bound) else result.commutator_bound,
+                )
                 span.set_attribute("result.truncation_bias", result.truncation_bias)
                 span.set_attribute("result.fallback_to_tri_ineq", result.fallback_to_tri_ineq)
                 return result
