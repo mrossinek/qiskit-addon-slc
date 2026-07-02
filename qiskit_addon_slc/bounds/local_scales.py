@@ -124,7 +124,11 @@ def compute_local_scales(
         # the prioritization seems to be the knapsack problem. We can just do a greedy
         # prioritization based on "value density":
         bias_bounds_flat = comm_bounds_flat_np * (1 - exp_rates_flat**2) / 2
-        priority_flat = bias_bounds_flat / rates_flat_np
+        priority_flat = np.zeros_like(bias_bounds_flat)
+        # When rates_flat_np is exactly 0, we know that the numerator is also exactly zero. So in
+        # the line below, we only update those values where they are non-zero.
+        nonzero = rates_flat_np != 0
+        priority_flat[nonzero] = bias_bounds_flat[nonzero] / rates_flat_np[nonzero]
     else:
         bias_bounds_flat = comm_bounds_flat_np * (1 - exp_rates_flat) / 2
         priority_flat = comm_bounds_flat_np * exp_rates_flat
