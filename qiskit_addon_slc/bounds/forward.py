@@ -189,7 +189,7 @@ def time_evolved_norm_forward(
             one_norm_loss = max(one_norm_loss, np.float64(0.0))
             inner_span.set_attribute("commutator.one_norm_loss", float(one_norm_loss))
 
-            trunc_bias += float(one_norm_loss)
+            trunc_bias += float(2 * one_norm_loss)
 
             if trunc_bias >= 2.0:
                 span.add_event("computation_aborted", {"reason": "truncation_bias_exceeds_bound"})
